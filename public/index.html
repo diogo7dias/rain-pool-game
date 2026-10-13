@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>RAIN POOL</title>
+<meta name="description" content="A 1-bit pixel fish dodging raindrops. One hit and you sink.">
+<meta name="theme-color" content="#000000">
+<style>
+  :root { color-scheme: dark; background-color: #000; }
+  html, body { margin: 0; height: 100%; background-color: #000; overflow: hidden; }
+  body { display: grid; place-items: center; }
+  canvas { image-rendering: pixelated; touch-action: none; cursor: crosshair; outline: none; }
+</style>
+</head>
+<body>
+<canvas id="c" width="135" height="180" tabindex="0" aria-label="Rain Pool: steer the fish away from the raindrops"></canvas>
+<script>
+"use strict";
+// RAIN POOL, the game. Everything is a 1-bit picture on a 135x180 grid (white or black), scaled
+// up. It opens on the rain-pool loop (a figure turning in the rain), zooms into the water, and
+// turns into a top view: you are a small fish, raindrops show a shrinking ring before they land,
+// one hit and you sink. Score = seconds survived; the top 10 live on a shared board.
+
+const W = 135, H = 180, TAU = Math.PI * 2;
+const cv = document.getElementById("c");
+const ctx = cv.getContext("2d");
+const img = ctx.createImageData(W, H);
+const on = new Uint8Array(W * H);   // the 1-bit frame
+const halo = new Uint8Array(W * H); // the figure grown by a pixel: rain behind it is cut out
+
+// ---------- helpers ----------
+function hash(n) {
+  let x = Math.imul(n >>> 0, 0x9e3779b9) ^ 0x85ebca6b;
+  x ^= x >>> 15; x = Math.imul(x, 0x2c1b3c6d); x ^= x >>> 12;
+  return (x & 0xffff) / 65535;
+}
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+const bayer = (x, y) => (BAYER[(y & 3) * 4 + (x & 3)] + 0.5) / 16;
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const smoothstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+const easeOut = (x) => 1 - Math.pow(1 - clamp(x, 0, 1), 3);
+const easeBack = (x) => { x = clamp(x, 0, 1); return 1 + 2.7 * Math.pow(x - 1, 3) + 1.7 * Math.pow(x - 1, 2); };
+const rand = (a, b) => a + Math.random() * (b - a);
+
+function plot(x, y) { x = Math.floor(x); y = Math.floor(y); if (x >= 0 && x < W && y >= 0 && y < H) on[y * W + x] = 1; }
+function plotBehind(x, y) { x = Math.floor(x); y = Math.floor(y); if (x >= 0 && x < W && y >= 0 && y < H && !halo[y * W + x]) on[y * W + x] = 1; }
+function line(x0, y0, x1, y1, behind) {
+  const steps = Math.max(1, Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0))));
+  for (let s = 0; s <= steps; s++) {
+    const f = s / steps, x = x0 + (x1 - x0) * f, y = y0 + (y1 - y0) * f;
+    behind ? plotBehind(x, y) : plot(x, y);
+  }
+}
+/** A dashed ring dithered to `alpha`; `flat` squashes it into an ellipse lying on the water. */
+function ring(cx, cy, rx, alpha, gaps, seed, flat) {
+  const ry = flat ? rx * 0.22 : rx;
+  const n = Math.max(8, Math.ceil(TAU * rx)) * 2;
+  for (let s = 0; s < n; s++) {
+    const a = s / n * TAU;
+    if (hash(seed + Math.floor(a * rx / 4)) < gaps) continue;
+    const x = Math.floor(cx + rx * Math.cos(a)), y = Math.floor(cy + ry * Math.sin(a));
+    if (alpha > bayer(x, y)) {
+      plotBehind(x, y);
+      if (flat && rx > 9 && Math.sin(a) > 0.45 && alpha > 0.6) plotBehind(x, y + 1);
+    }
+  }
+}
+
+// ---------- 3x5 pixel font ----------
+const FONT = {};
+("0:111101101101111 1:010110010010111 2:111001111100111 3:111001111001111 4:101101111001001 " +
+ "5:111100111001111 6:111100111101111 7:111001010010010 8:111101111101111 9:111101111001111 " +
+ "A:010101111101101 B:110101110101110 C:011100100100011 D:110101101101110 E:111100110100111 " +
+ "F:111100110100100 G:011100101101011 H:101101111101101 I:111010010010111 J:001001001101010 " +
+ "K:101101110101101 L:100100100100111 M:101111111101101 N:110101101101101 O:010101101101010 " +
+ "P:110101110100100 Q:010101101110011 R:110101110101101 S:011100010001110 T:111010010010010 " +
+ "U:101101101101111 V:101101101101010 W:101101111111101 X:101101010101101 Y:101101010010010 " +
+ "Z:111001010100111 .:000000000000010 -:000000111000000 #:000000000000000")
+  .split(" ").forEach((g) => { FONT[g[0]] = g.slice(2); });
+const textWidth = (s, k) => s.length * 4 * k - k;
+/** Text in white with a black outline, so it reads over rain. */
+function text(s, x, y, k = 1, align = "left") {
+  s = s.toUpperCase();
+  if (align === "center") x -= Math.floor(textWidth(s, k) / 2);
+  if (align === "right") x -= textWidth(s, k);
+  for (const pass of [0, 1]) {
+    for (let i = 0; i < s.length; i++) {
+      const g = FONT[s[i]] || FONT["#"];
+      for (let r = 0; r < 5; r++) for (let c = 0; c < 3; c++) {
+        if (g[r * 3 + c] !== "1") continue;
+        for (let dy = 0; dy < k; dy++) for (let dx = 0; dx < k; dx++) {
+          const px = x + i * 4 * k + c * k + dx, py = y + r * k + dy;
+          if (pass === 0) { for (let oy = -1; oy <= 1; oy++) for (let ox = -1; ox <= 1; ox++) clear(px + ox, py + oy); }
+          else plot(px, py);
+        }
+      }
+    }
+  }
+}
+function clear(x, y) { if (x >= 0 && x < W && y >= 0 && y < H) on[y * W + x] = 0; }
+const fmt = (ms) => (ms / 1000).toFixed(1);
+
+// ---------- sound: soft water plips, synthesised ----------
+let ac = null, master = null, muted = localStorage.getItem("rp-muted") === "1";
+function startAudio() {
+  if (ac) { ac.resume(); return; }
+  ac = new (window.AudioContext || window.webkitAudioContext)();
+  master = ac.createGain();
+  master.gain.value = muted ? 0 : 0.32;
+  // a small room: a short decaying noise burst as the impulse response
+  const room = ac.createConvolver(), len = Math.floor(ac.sampleRate * 0.45);
+  const ir = ac.createBuffer(2, len, ac.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = ir.getChannelData(ch);
+    for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / len * 7) * 0.5;
+  }
+  room.buffer = ir;
+  const wet = ac.createGain(); wet.gain.value = 0.22;
+  master.connect(ac.destination); master.connect(room); room.connect(wet); wet.connect(ac.destination);
+}
+function setMuted(m) {
+  muted = m; localStorage.setItem("rp-muted", m ? "1" : "0");
+  if (master) master.gain.value = m ? 0 : 0.32;
+}
+/** A water drop: a pure sine whose pitch glides up 1.8x as the bubble closes, soft attack. */
+function plip(f0, amp, decay, pan = 0, delay = 0) {
+  if (!ac || muted) return;
+  const at = ac.currentTime + delay;
+  const o = ac.createOscillator(), g = ac.createGain(), p = ac.createStereoPanner();
+  o.frequency.setValueAtTime(f0, at);
+  o.frequency.setTargetAtTime(f0 * 1.8, at, 1 / 45);
+  g.gain.setValueAtTime(0, at);
+  g.gain.linearRampToValueAtTime(amp, at + 0.005);
+  g.gain.setTargetAtTime(0, at + 0.005, 1 / decay);
+  p.pan.value = clamp(pan, -1, 1);
+  o.connect(g).connect(p).connect(master);
+  o.start(at); o.stop(at + 7 / decay);
+}
+/** A soft glassy tap for a star: two inharmonic partials. */
+function tap(f1, amp, pan) {
+  if (!ac || muted) return;
+  const at = ac.currentTime, p = ac.createStereoPanner();
+  p.pan.value = pan; p.connect(master);
+  for (const [mul, a, dec] of [[1, amp, 30], [2.76, amp * 0.3, 55]]) {
+    const o = ac.createOscillator(), g = ac.createGain();
+    o.frequency.value = f1 * mul;
+    g.gain.setValueAtTime(0, at); g.gain.linearRampToValueAtTime(a, at + 0.002); g.gain.setTargetAtTime(0, at + 0.002, 1 / dec);
+    o.connect(g).connect(p); o.start(at); o.stop(at + 0.3);
+  }
+}
+const dropSound = (big, x) => big
+  ? plip(rand(380, 640), 0.5, 16, (x / W - 0.5) * 1.5)
+  : plip(rand(650, 1250), rand(0.25, 0.4), 28, (x / W - 0.5) * 1.5);
+
+// ---------- the intro: the rain-pool loop, ported from the fframes video ----------
+const LOOP = 12, WATERLINE = 146, LAND_TOP = 140, SLANT = 0.24, AXIS_X = 66;
+const DROPS = 16, DROP_PERIODS = [1, 1.2, 1.5, 2], HERO_SHARE = 0.2, HERO_LIFE = 1.9, SMALL_LIFE = 0.55;
+const STARS = 9, STAR_PERIODS = [3, 4, 6], STAR_SHOW = 0.5;
+const SWELLS = [0.3, 3.4, 6.1, 9.0], SWELL_LIFE = 7;
+
+function ellipsoid(px, py, pz, cx, cy, cz, rx, ry, rz) {
+  const qx = (px - cx) / rx, qy = (py - cy) / ry, qz = (pz - cz) / rz;
+  const k0 = Math.sqrt(qx * qx + qy * qy + qz * qz);
+  const k1 = Math.sqrt((qx / rx) ** 2 + (qy / ry) ** 2 + (qz / rz) ** 2);
+  return k0 * (k0 - 1) / Math.max(k1, 1e-6);
+}
+function smin(a, b, k) { const h = clamp(0.5 + 0.5 * (b - a) / k, 0, 1); return b + (a - b) * h - k * h * (1 - h); }
+/** Distance to the figure in its own frame: x across the shoulders, y down, the face toward -z. */
+function body(x, y, z) {
+  const head = ellipsoid(x, y, z, 0, 113, 0, 10, 13, 11);
+  const ears = ellipsoid(Math.abs(x), y, z, 9.8, 114, 0.5, 2, 3.5, 2.5);
+  const nose = ellipsoid(x, y, z, 0, 116.5, -10.5, 1.8, 3, 3);
+  const h = clamp((y - 121) / 13, 0, 1);
+  const neck = Math.sqrt(x * x + (y - 121 - 13 * h) ** 2 + (z - 1) ** 2) - 6;
+  const torso = ellipsoid(x, y, z, 0, 158, 0, 31, 27, 15);
+  return smin(smin(smin(smin(head, ears, 1), nose, 1), neck, 3), torso, 5);
+}
+/** Hair darker, face always bright so its closed eyes and smile read. */
+function shade(bx, by, bz, lit) {
+  if (by > 124) return lit;
+  if (bz < -5 && by > 104) {
+    const dx = Math.abs(bx) - 4;
+    const eye = Math.abs(dx) < 1.8 && Math.abs(by - (112.3 - 0.35 * dx * dx)) < 0.6;
+    const smile = Math.abs(bx) < 2.6 && Math.abs(by - (121.6 - 0.18 * bx * bx)) < 0.6;
+    return eye || smile ? 0 : Math.max(lit, 0.8);
+  }
+  return bz > -3 || by < 104.5 ? 0.5 * lit : lit;
+}
+const figureBob = (t) => Math.round(Math.sin(TAU * t / 4));
+/** Lit share of the figure at a pixel centre, or -1 outside it: a ray marched from the viewer. */
+function figure(x, y, t) {
+  if (y >= WATERLINE || y < 96 || Math.abs(x - AXIS_X) > 34) return -1;
+  y += figureBob(t);
+  const yaw = TAU * t / LOOP, s = Math.sin(yaw), c = Math.cos(yaw);
+  const sdf = (X, Y, Z) => { const dx = X - AXIS_X; return body(dx * c - Z * s, Y, dx * s + Z * c); };
+  let z = 34;
+  for (let i = 0; i < 96; i++) {
+    const d = sdf(x, y, z);
+    if (d < 0.02) {
+      const e = 0.3;
+      const nx = sdf(x + e, y, z) - sdf(x - e, y, z), ny = sdf(x, y + e, z) - sdf(x, y - e, z), nz = sdf(x, y, z + e) - sdf(x, y, z - e);
+      const l = Math.max(1e-6, Math.sqrt(nx * nx + ny * ny + nz * nz));
+      const lit = smoothstep(-0.45, 0.5, (-0.55 * nx - 0.5 * ny + 0.67 * nz) / l);
+      const dx = x - AXIS_X;
+      return shade(dx * c - z * s, y, dx * s + z * c, lit);
+    }
+    z -= d * 0.9;
+    if (z < -34) break;
+  }
+  return -1;
+}
+function drop(i, k) {
+  const period = DROP_PERIODS[Math.floor(hash(i * 17 + 3) * 4) % 4];
+  const n = Math.round(LOOP / period), kk = ((k % n) + n) % n;
+  const seed = i * 7919 + kk * 104729;
+  return {
+    period, phase: hash(i * 31 + 5) * period, seed,
+    x: -6 + hash(seed + 2) * (W + 6),
+    y: LAND_TOP + Math.pow(hash(seed + 1), 0.8) * (H - 1 - LAND_TOP),
+    len: 10 + hash(seed + 3) * 15,
+    hero: hash(seed + 4) < HERO_SHARE,
+  };
+}
+const starPeriod = (i) => STAR_PERIODS[Math.floor(hash(i * 13 + 9) * 3) % 3];
+const starPhase = (i) => hash(i * 41 + 1) * starPeriod(i);
+function star(i, k) {
+  const n = Math.round(LOOP / starPeriod(i)), seed = i * 997 + (((k % n) + n) % n) * 7717;
+  let x = 6 + hash(seed + 1) * (W - 12);
+  const y = 8 + hash(seed + 2) * 118;
+  if (y > 88 && x >= 40 && x < 90) x = x < 65 ? x - 28 : x + 28;
+  return { x, y, seed };
+}
+
+function drawIntro(t) {
+  on.fill(0); halo.fill(0);
+  const fig = new Uint8Array(W * H);
+  for (let y = 96; y < WATERLINE; y++) for (let x = 30; x < 103; x++) {
+    const lit = figure(x + 0.5, y + 0.5, t);
+    if (lit >= 0) { fig[y * W + x] = 1; on[y * W + x] = lit > bayer(x, y) ? 1 : 0; }
+  }
+  for (let y = 94; y < WATERLINE + 1; y++) for (let x = 28; x < 105; x++) {
+    let h = 0;
+    for (let dy = -1; dy <= 1 && !h; dy++) for (let dx = -1; dx <= 1; dx++) if (fig[(y + dy) * W + x + dx]) { h = 1; break; }
+    halo[y * W + x] = h;
+  }
+  SWELLS.forEach((s, j) => {
+    for (const k of [-1, 0]) {
+      const age = (t - s - k * LOOP) / SWELL_LIFE;
+      if (age >= 0 && age < 1) ring(AXIS_X, WATERLINE + 1, 33 + 50 * easeOut(age), 1.25 * Math.pow(1 - age, 1.3), 0.15 + 0.5 * age, j * 1000, true);
+    }
+  });
+  for (let i = 0; i < DROPS; i++) {
+    const p = drop(i, 0), k = Math.floor((t + p.phase) / p.period);
+    const d = drop(i, k), u = (t + p.phase) / p.period - k;
+    const foot = -2 + (d.y + 2) * u, xf = d.x + (d.y - foot) * SLANT;
+    line(xf, foot, xf + d.len * SLANT, foot - d.len, d.y < WATERLINE + 3);
+    for (let kb = k - 3; kb < k; kb++) {
+      const d = drop(i, kb), landed = (kb + 1) * p.period - p.phase, age = t - landed;
+      if (figure(d.x, d.y, landed) >= 0) continue;
+      const depth = 0.45 + 0.8 * (d.y - LAND_TOP) / (H - LAND_TOP);
+      if (d.hero && age < HERO_LIFE) {
+        [0, 0.22].forEach((lag, r) => {
+          const a = (age - lag) / (HERO_LIFE - lag);
+          if (a > 0) ring(d.x, d.y, 1 + 21 * depth * easeOut(a), 1.4 * Math.pow(1 - a, 1.4), 0.1 + 0.55 * a, d.seed + r, true);
+        });
+        if (age < 0.32) {
+          const f = age / 0.32;
+          for (const [dx, h] of [[-2.2, 4], [0.3, 6], [2.4, 3.5]]) plotBehind(d.x + dx * f * 1.6, d.y - h * 4 * f * (1 - f));
+        }
+      } else if (!d.hero && age < SMALL_LIFE) {
+        const a = age / SMALL_LIFE;
+        ring(d.x, d.y, 1 + 5 * depth * easeOut(a), 1.3 * (1 - a), 0.2, d.seed, true);
+      }
+    }
+  }
+  for (let i = 0; i < STARS; i++) {
+    const period = starPeriod(i), k = Math.floor((t + starPhase(i)) / period);
+    const u = ((t + starPhase(i)) / period - k) / STAR_SHOW;
+    if (u >= 1) continue;
+    const { x, y, seed } = star(i, k);
+    const size = easeBack(u / 0.14) * (1 - smoothstep(0.7, 1, u)) * (1 + 0.08 * Math.sin(u * 40));
+    const turn = hash(seed + 5) * TAU + u * 0.9, r = 6 + hash(seed + 6) * 4.5;
+    for (let ray = 0; ray < 8; ray++) {
+      const a = turn + ray * TAU / 8;
+      const len = r * size * (ray % 2 ? 0.55 : 1) * (0.75 + 0.5 * hash(seed + 10 + ray));
+      line(x, y, x + len * Math.cos(a), y + len * Math.sin(a), true);
+    }
+    if (size > 0.5) for (const [dx, dy] of [[0, 0], [-1, 0], [0, -1], [-1, -1]]) plotBehind(x + dx, y + dy);
+  }
+  [172, 177].forEach((y, row) => {
+    const shift = (row % 2 ? -1 : 1) * Math.floor(t / LOOP * 64 * (1 + row % 2));
+    for (let x = 0; x < W; x++) {
+      const cell = Math.floor((((x + shift) % 64) + 64) % 64 / 3);
+      if (hash(row * 101 + cell) < 0.12 + 0.06 * row) plotBehind(x, y);
+    }
+  });
+}
+/** Intro sounds: a plip as each visible drop lands, a tap as each star opens. */
+const introK = [], starK = [];
+function introSounds(t) {
+  for (let i = 0; i < DROPS; i++) {
+    const p = drop(i, 0), k = Math.floor((t + p.phase) / p.period);
+    if (introK[i] !== undefined && k !== introK[i]) {
+      const d = drop(i, k - 1);
+      if (figure(d.x, d.y, t) < 0) dropSound(d.hero, d.x);
+    }
+    introK[i] = k;
+  }
+  for (let i = 0; i < STARS; i++) {
+    const k = Math.floor((t + starPhase(i)) / starPeriod(i));
+    if (starK[i] !== undefined && k !== starK[i]) tap(rand(1900, 3100), rand(0.05, 0.08), (star(i, k).x / W - 0.5) * 1.5);
+    starK[i] = k;
+  }
+}
+
+// ---------- the pond, seen from above ----------
+const GLINTS = Array.from({ length: 70 }, (_, i) => ({ x: hash(i * 3 + 1) * W, y: hash(i * 3 + 2) * H, ph: hash(i * 3 + 3) * TAU, v: 1.5 + hash(i * 7) * 3 }));
+function drawGlints(t) {
+  for (const g of GLINTS) {
+    const x = ((g.x + t * g.v) % W + W) % W, y = g.y + Math.sin(t * 0.7 + g.ph) * 2;
+    if (Math.sin(t * 1.3 + g.ph) > 0.55) plot(x, y);
+  }
+}
+const FISH_SCALE = 1.7, FISH_R = 3.6, MAX_SPEED = 80;
+let G = null; // the current run
+function newRun() {
+  G = {
+    time: 0, fish: { x: W / 2, y: H * 0.62, vx: 0, vy: 0, ang: -Math.PI / 2 },
+    target: null, drops: [], splashes: [], wakes: [], spawn: 0.4, wake: 0,
+    dead: false, deadT: 0, token: null,
+  };
+  fetch("/api/start", { method: "POST" }).then((r) => r.json()).then((j) => { if (G) G.token = j.token; }).catch(() => {});
+}
+function spawnDrop() {
+  const f = G.fish, warn = Math.max(0.55, 1.15 - G.time * 0.006), big = Math.random() < 0.15;
+  let x, y;
+  if (Math.random() < 0.35) { x = f.x + f.vx * warn + rand(-7, 7); y = f.y + f.vy * warn + rand(-7, 7); }
+  else { x = rand(4, W - 4); y = rand(14, H - 4); }
+  G.drops.push({ x: clamp(x, 3, W - 3), y: clamp(y, 12, H - 3), t: 0, warn, big, seed: Math.floor(Math.random() * 1e6) });
+}
+function splash(x, y, big, seed, harmless) {
+  G.splashes.push({ x, y, big, seed, age: 0 });
+  dropSound(big, x);
+  if (harmless) return false;
+  const f = G.fish, d = Math.hypot(f.x - x, f.y - y);
+  if (d < (big ? 6 : 3.5) + FISH_R) return true;
+  if (d < 18) { const k = (18 - d) * 4 / Math.max(d, 0.5); f.vx += (f.x - x) * k; f.vy += (f.y - y) * k; }
+  return false;
+}
+const keys = new Set();
+function updateRun(dt) {
+  const f = G.fish;
+  if (G.dead) { G.deadT += dt; }
+  else {
+    G.time += dt;
+    G.spawn += Math.min(7, 1.1 + G.time * 0.07) * dt;
+    while (G.spawn >= 1) { G.spawn -= 1; spawnDrop(); }
+    // steer: keys set a direction, a pointer sets a target
+    let dx = (keys.has("ArrowRight") || keys.has("d") ? 1 : 0) - (keys.has("ArrowLeft") || keys.has("a") ? 1 : 0);
+    let dy = (keys.has("ArrowDown") || keys.has("s") ? 1 : 0) - (keys.has("ArrowUp") || keys.has("w") ? 1 : 0);
+    let wx = 0, wy = 0;
+    if (dx || dy) { const l = Math.hypot(dx, dy); wx = dx / l * MAX_SPEED; wy = dy / l * MAX_SPEED; G.target = null; }
+    else if (G.target) {
+      wx = (G.target.x - f.x) * 7; wy = (G.target.y - f.y) * 7;
+      const l = Math.hypot(wx, wy); if (l > MAX_SPEED) { wx *= MAX_SPEED / l; wy *= MAX_SPEED / l; }
+    }
+    const k = Math.min(1, dt * 9);
+    f.vx += (wx - f.vx) * k; f.vy += (wy - f.vy) * k;
+    f.x = clamp(f.x + f.vx * dt, 4, W - 4); f.y = clamp(f.y + f.vy * dt, 12, H - 4);
+    const sp = Math.hypot(f.vx, f.vy);
+    if (sp > 4) { let da = Math.atan2(f.vy, f.vx) - f.ang; da = ((da + Math.PI) % TAU + TAU) % TAU - Math.PI; f.ang += da * Math.min(1, dt * 10); }
+    G.wake += dt * (sp > 25 ? 1 : 0);
+    if (G.wake > 0.2) { G.wake = 0; G.wakes.push({ x: f.x - Math.cos(f.ang) * 4, y: f.y - Math.sin(f.ang) * 4, age: 0 }); }
+  }
+  for (const d of G.drops) d.t += dt;
+  for (const d of G.drops.filter((d) => d.t >= d.warn)) {
+    if (splash(d.x, d.y, d.big, d.seed, G.dead) && !G.dead) die();
+  }
+  G.drops = G.drops.filter((d) => d.t < d.warn);
+  for (const s of G.splashes) s.age += dt;
+  G.splashes = G.splashes.filter((s) => s.age < 1.2);
+  for (const w of G.wakes) w.age += dt;
+  G.wakes = G.wakes.filter((w) => w.age < 0.6);
+}
+function die() {
+  G.dead = true;
+  plip(rand(150, 190), 0.6, 9, (G.fish.x / W - 0.5));
+  [0.3, 0.55, 0.85].forEach((d) => plip(rand(900, 1400), 0.14, 30, (G.fish.x / W - 0.5), d));
+}
+function drawFish(f, t, alpha, scale) {
+  const c = Math.cos(f.ang), s = Math.sin(f.ang), wig = Math.sin(t * 14) * 0.9;
+  for (let y = Math.floor(f.y - 10); y <= f.y + 10; y++) for (let x = Math.floor(f.x - 10); x <= f.x + 10; x++) {
+    const px = (x + 0.5 - f.x) / scale, py = (y + 0.5 - f.y) / scale;
+    const u = px * c + py * s, v = -px * s + py * c;
+    const inBody = (u / 3.4) ** 2 + (v / 1.7) ** 2 < 1;
+    const tv = v - wig * (-u - 2.5) * 0.35;
+    const inTail = u < -2.6 && u > -5.6 && Math.abs(tv) < (-u - 2.4) * 0.75;
+    const eye = Math.abs(u - 1.6) < 0.5 && Math.abs(Math.abs(v) - 0.9) < 0.5;
+    if ((inBody && !eye) || inTail) { if (alpha > bayer(x, y)) plot(x, y); }
+  }
+}
+function drawSplashes(list) {
+  for (const s of list) {
+    const life = s.big ? 1.2 : 0.8;
+    [0, 0.18].forEach((lag, r) => {
+      const a = (s.age - lag) / (life - lag);
+      if (a > 0 && a < 1) ring(s.x, s.y, 1 + (s.big ? 22 : 13) * easeOut(a), 1.35 * Math.pow(1 - a, 1.4), 0.1 + 0.55 * a, s.seed + r, false);
+    });
+    if (s.age < 0.35) {
+      const f = s.age / 0.35;
+      for (let i = 0; i < 6; i++) {
+        const a = i * TAU / 6 + hash(s.seed) * TAU, r = (s.big ? 9 : 5.5) * easeOut(f);
+        plot(s.x + Math.cos(a) * r, s.y + Math.sin(a) * r);
+      }
+    }
+  }
+}
+function drawRun(t) {
+  on.fill(0); halo.fill(0);
+  drawGlints(t);
+  for (const w of G.wakes) { const a = w.age / 0.6; ring(w.x, w.y, 1 + 3 * a, 1 - a, 0.2, 7, false); }
+  drawSplashes(G.splashes);
+  for (const d of G.drops) {
+    const u = d.t / d.warn;
+    ring(d.x, d.y, (d.big ? 3 : 2) + (d.big ? 14 : 10) * (1 - u), 0.3 + 0.9 * u, 0.25, d.seed, false);
+    if (u > 0.5) { plot(d.x, d.y); if (d.big) { plot(d.x - 1, d.y); plot(d.x, d.y - 1); plot(d.x - 1, d.y - 1); } }
+  }
+  if (!G.dead) drawFish(G.fish, t, 1, FISH_SCALE);
+  else if (G.deadT < 1.4) {
+    const a = G.deadT / 1.4;
+    drawFish(G.fish, t * 0.3, 1.1 - a, FISH_SCALE * (1 - 0.45 * a));
+    [0.3, 0.55, 0.85].forEach((b, i) => { const age = (G.deadT - b) / 0.5; if (age > 0 && age < 1) ring(G.fish.x + (i - 1) * 2.5, G.fish.y - i, 1 + 3 * age, 1 - age, 0, 3, false); });
+  }
+  text(fmt(G.time * 1000), 3, 3, 2);
+  if (board && board.length) text("HI " + fmt(board[0].ms), W - 3, 3, 1, "right");
+}
+
+// ---------- the board ----------
+let board = null;      // top 10 [{initials, ms}], or null when offline
+let lastRank = 0, lastMs = 0;
+function loadBoard() { return fetch("/api/scores").then((r) => r.json()).then((b) => { board = b; }).catch(() => { board = null; }); }
+const qualifies = (ms) => board && ms > 0 && (board.length < 10 || ms > board[board.length - 1].ms);
+let initials = (localStorage.getItem("rp-initials") || "AAA").split(""), slot = 0, sending = false;
+function submit() {
+  if (sending) return;
+  sending = true;
+  const name = initials.join("");
+  localStorage.setItem("rp-initials", name);
+  fetch("/api/score", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ token: G.token, initials: name, ms: lastMs }) })
+    .then((r) => r.json())
+    .then((j) => { if (j.top) { board = j.top; lastRank = j.rank; } })
+    .catch(() => {})
+    .finally(() => { sending = false; go("board"); });
+}
+const LETTER_X = [W / 2 - 22, W / 2 - 5, W / 2 + 12], LETTER_Y = 84;
+function drawAmbient(t, amb) {
+  on.fill(0); halo.fill(0);
+  drawGlints(t);
+  drawSplashes(amb);
+}
+function drawInitials(t) {
+  text("NEW HIGH SCORE", W / 2, 34, 1, "center");
+  text(fmt(lastMs), W / 2, 46, 3, "center");
+  initials.forEach((ch, i) => {
+    const x = LETTER_X[i];
+    if (i !== slot || Math.floor(t * 3) % 2 === 0) text(ch, x, LETTER_Y, 3);
+    tri(x + 4, LETTER_Y - 8, 1); tri(x + 4, LETTER_Y + 21, -1);
+  });
+  text("OK", W / 2, 126, 2, "center");
+  for (let x = W / 2 - 12; x <= W / 2 + 12; x++) { plot(x, 122); plot(x, 139); }
+  for (let y = 122; y <= 139; y++) { plot(W / 2 - 12, y); plot(W / 2 + 12, y); }
+}
+function tri(cx, cy, dir) { for (let r = 0; r < 4; r++) for (let x = -r; x <= r; x++) plot(cx + x, cy + dir * (r - 2)); }
+function drawBoard(t) {
+  text("TOP 10", W / 2, 14, 2, "center");
+  if (!board) text("BOARD OFFLINE", W / 2, 60, 1, "center");
+  else board.forEach((row, i) => {
+    const y = 34 + i * 10, mine = lastRank === i + 1;
+    if (mine && Math.floor(t * 3) % 2) return;
+    text(String(i + 1), 26, y, 1, "right");
+    text(row.initials, 36, y);
+    text(fmt(row.ms), 108, y, 1, "right");
+  });
+  if (lastMs) text("YOU " + fmt(lastMs), W / 2, 140, 1, "center");
+  if (Math.floor(t * 2) % 2 === 0) text("TAP TO PLAY", W / 2, 156, 1, "center");
+}
+function drawMute() {
+  // a tiny speaker in the top-right corner; tap it to mute
+  for (let y = 4; y <= 8; y++) { plot(W - 10, y + 0); }
+  for (let y = 3; y <= 9; y++) plot(W - 9, y);
+  for (let y = 5; y <= 7; y++) { plot(W - 11, y); plot(W - 12, y); }
+  if (muted) { for (let i = 0; i < 5; i++) { plot(W - 7 + i, 4 + i); plot(W - 3 - i, 4 + i); } }
+  else { for (let y = 4; y <= 8; y++) plot(W - 6, y); for (let y = 2; y <= 10; y++) plot(W - 4, y); }
+}
+
+// ---------- states ----------
+let mode = "title", modeT = 0, introT = 0, amb = [], ambT = 0;
+function go(m) { mode = m; modeT = 0; if (m === "board" || m === "initials") amb = []; }
+const ZOOM = 1.6, FADE_IN = 0.6, ZX = 112, ZY = 164; // dive into open water beside the figure
+
+function frame(dt) {
+  modeT += dt;
+  const t = performance.now() / 1000;
+  if (mode === "title") {
+    introT += dt;
+    drawIntro(introT % LOOP);
+    if (Math.floor(modeT * 2) % 2 === 0) text("TAP TO DIVE", W / 2, 62, 1, "center");
+    if (board && board.length) text("HI " + board[0].initials + " " + fmt(board[0].ms), W / 2, 72, 1, "center");
+    drawMute();
+  } else if (mode === "zoom") {
+    introT += dt;
+    introSounds(introT % LOOP);
+    drawIntro(introT % LOOP);
+    const src = on.slice(), u = clamp(modeT / ZOOM, 0, 1), e = u * u * (3 - 2 * u);
+    const s = 1 + 9 * e, cx = W / 2 + (ZX - W / 2) * e, cy = H / 2 + (ZY - H / 2) * e, fade = 1 - smoothstep(0.55, 1, u);
+    on.fill(0);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      const sx = Math.floor(cx + (x + 0.5 - W / 2) / s), sy = Math.floor(cy + (y + 0.5 - H / 2) / s);
+      if (sx >= 0 && sx < W && sy >= 0 && sy < H && src[sy * W + sx] && fade > bayer(x, y)) on[y * W + x] = 1;
+    }
+    if (modeT >= ZOOM) { newRun(); go("play"); }
+  } else if (mode === "play") {
+    updateRun(dt);
+    drawRun(t);
+    if (modeT < FADE_IN) { const a = modeT / FADE_IN; for (let i = 0; i < W * H; i++) if (a < bayer(i % W, (i / W) | 0)) on[i] = 0; }
+    if (G.dead && G.deadT > 1.8) {
+      lastMs = Math.floor(G.time * 1000); lastRank = 0;
+      if (lastMs > (+localStorage.getItem("rp-best") || 0)) localStorage.setItem("rp-best", lastMs);
+      if (qualifies(lastMs) && G.token) { slot = 0; go("initials"); } else { loadBoard(); go("board"); }
+    }
+  } else {
+    ambT += dt;
+    if (ambT > 0.8) { ambT = 0; amb.push({ x: rand(8, W - 8), y: rand(20, H - 8), big: Math.random() < 0.2, seed: Math.floor(Math.random() * 1e6), age: 0 }); }
+    for (const s of amb) s.age += dt;
+    amb = amb.filter((s) => s.age < 1.2);
+    drawAmbient(t, amb);
+    mode === "initials" ? drawInitials(t) : drawBoard(t);
+    drawMute();
+  }
+  for (let i = 0, j = 0; i < W * H; i++, j += 4) { const v = on[i] ? 255 : 0; img.data[j] = img.data[j + 1] = img.data[j + 2] = v; img.data[j + 3] = 255; }
+  ctx.putImageData(img, 0, 0);
+}
+let last = performance.now();
+function loop(now) { frame(Math.min(0.05, (now - last) / 1000)); last = now; requestAnimationFrame(loop); }
+
+// ---------- input ----------
+function grid(e) { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) / r.width * W, y: (e.clientY - r.top) / r.height * H }; }
+let touchLast = null;
+function press(p) {
+  startAudio();
+  if (mode !== "play" && mode !== "zoom" && p.x > W - 16 && p.y < 14) { setMuted(!muted); return; }
+  if (mode === "title") go("zoom");
+  else if (mode === "board") { newRun(); go("play"); }
+  else if (mode === "initials") {
+    for (let i = 0; i < 3; i++) {
+      if (Math.abs(p.x - (LETTER_X[i] + 4)) < 8) {
+        if (p.y > LETTER_Y - 14 && p.y < LETTER_Y - 2) { cycle(i, -1); return; }
+        if (p.y > LETTER_Y + 15 && p.y < LETTER_Y + 27) { cycle(i, 1); return; }
+        if (p.y >= LETTER_Y - 2 && p.y <= LETTER_Y + 15) { slot = i; cycle(i, 1); return; }
+      }
+    }
+    if (p.y > 118 && p.y < 144 && Math.abs(p.x - W / 2) < 16) submit();
+  }
+}
+function cycle(i, d) { slot = i; initials[i] = String.fromCharCode(65 + ((initials[i].charCodeAt(0) - 65 + d + 26) % 26)); plip(rand(700, 1100), 0.15, 30); }
+cv.addEventListener("pointerdown", (e) => {
+  e.preventDefault(); cv.focus();
+  const p = grid(e);
+  press(p);
+  if (mode === "play" && G) {
+    if (e.pointerType === "mouse") G.target = p;
+    else { touchLast = p; G.target = { x: G.fish.x, y: G.fish.y }; }
+  }
+});
+cv.addEventListener("pointermove", (e) => {
+  if (mode !== "play" || !G) return;
+  const p = grid(e);
+  if (e.pointerType === "mouse") G.target = p;
+  else if (touchLast && G.target) {
+    // touch steers like a trackpad, so the finger never hides the fish
+    G.target = { x: clamp(G.target.x + (p.x - touchLast.x) * 1.4, 4, W - 4), y: clamp(G.target.y + (p.y - touchLast.y) * 1.4, 12, H - 4) };
+    touchLast = p;
+  }
+});
+addEventListener("pointerup", () => { touchLast = null; });
+addEventListener("keydown", (e) => {
+  if (e.key === "m" || e.key === "M") { setMuted(!muted); return; }
+  if (mode === "initials") {
+    if (/^[a-zA-Z]$/.test(e.key)) { initials[slot] = e.key.toUpperCase(); slot = Math.min(2, slot + 1); }
+    else if (e.key === "ArrowUp") cycle(slot, -1);
+    else if (e.key === "ArrowDown") cycle(slot, 1);
+    else if (e.key === "ArrowLeft" || e.key === "Backspace") slot = Math.max(0, slot - 1);
+    else if (e.key === "ArrowRight") slot = Math.min(2, slot + 1);
+    else if (e.key === "Enter") submit();
+    e.preventDefault();
+    return;
+  }
+  keys.add(e.key.length === 1 ? e.key.toLowerCase() : e.key);
+  if (e.key.startsWith("Arrow") || e.key === " ") e.preventDefault();
+  if ((e.key === "Enter" || e.key === " ") && (mode === "title" || mode === "board")) press({ x: W / 2, y: H / 2 });
+});
+addEventListener("keyup", (e) => keys.delete(e.key.length === 1 ? e.key.toLowerCase() : e.key));
+
+// crisp pixels: the biggest whole-pixel scale that fits, fractional only on tiny screens
+function fit() {
+  const dpr = devicePixelRatio || 1, k = Math.min(innerWidth / W, innerHeight / H);
+  const s = k * dpr >= 2 ? Math.floor(k * dpr) / dpr : k;
+  cv.style.width = W * s + "px"; cv.style.height = H * s + "px";
+}
+addEventListener("resize", fit);
+fit();
+loadBoard();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

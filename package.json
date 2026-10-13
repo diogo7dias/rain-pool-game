@@ -1,0 +1,16 @@
+{
+  "name": "rain-pool-game",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler d1 execute DB --local --file schema.sql && wrangler dev",
+    "test": "node --test",
+    "deploy": "wrangler deploy",
+    "lint:ui": "lintapple http://localhost:8787",
+    "e2e": "node e2e.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4",
+    "playwright": "^1"
+  }
+}
