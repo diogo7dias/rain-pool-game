@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler d1 execute DB --local --file schema.sql && wrangler dev",
+    "dev": "wrangler dev",
     "test": "node --test",
     "deploy": "wrangler deploy",
     "lint:ui": "lintapple http://localhost:8787",

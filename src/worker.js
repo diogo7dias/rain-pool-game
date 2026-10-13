@@ -1,5 +1,6 @@
 // The high-score API: /api/start hands out a signed run token, /api/score accepts a score
 // no longer than the real time since that token, once per token; /api/scores is the top 10.
+// Stored in Workers KV: one key holds the top 10, used tokens are keys that expire.
 const enc = new TextEncoder();
 const MAX_MS = 2 * 60 * 60 * 1000;
 const SLACK_MS = 2000;
@@ -27,24 +28,29 @@ export async function checkScore(secret, { token, initials, ms }, now) {
   return null;
 }
 
-const top = (db) => db.prepare("SELECT initials, ms FROM scores ORDER BY ms DESC, created ASC LIMIT 10").all().then((r) => r.results);
+// ponytail: read-modify-write on one KV key, so two scores landing in the same instant can drop
+// one; fine for a small board, move to D1 or a Durable Object if traffic grows.
+const top = async (kv) => (await kv.get("top", "json")) || [];
 const json = (data, status = 200) => Response.json(data, { status, headers: { "cache-control": "no-store" } });
 
 export default {
   async fetch(req, env) {
     const { pathname } = new URL(req.url);
-    if (pathname === "/api/scores" && req.method === "GET") return json(await top(env.DB));
+    if (pathname === "/api/scores" && req.method === "GET") return json((await top(env.SCORES)).map(({ initials, ms }) => ({ initials, ms })));
     if (pathname === "/api/start" && req.method === "POST") return json({ token: await makeToken(env.SECRET, Date.now()) });
     if (pathname === "/api/score" && req.method === "POST") {
       const sub = await req.json().catch(() => ({}));
       const now = Date.now();
       const err = await checkScore(env.SECRET, sub, now);
       if (err) return json({ error: err }, 400);
-      const ins = await env.DB.prepare("INSERT OR IGNORE INTO scores (initials, ms, token, created) VALUES (?, ?, ?, ?)")
-        .bind(sub.initials, sub.ms, sub.token, now).run();
-      if (!ins.meta.changes) return json({ error: "token already used" }, 409);
-      const { rank } = await env.DB.prepare("SELECT COUNT(*) + 1 AS rank FROM scores WHERE ms > ?").bind(sub.ms).first();
-      return json({ rank, top: await top(env.DB) });
+      const used = `t:${sub.token.split(".")[2]}`;
+      if (await env.SCORES.get(used)) return json({ error: "token already used" }, 409);
+      await env.SCORES.put(used, "1", { expirationTtl: MAX_MS / 1000 + 600 });
+      const entry = { initials: sub.initials, ms: sub.ms, at: now };
+      const board = [...(await top(env.SCORES)), entry].sort((a, b) => b.ms - a.ms || a.at - b.at).slice(0, 10);
+      await env.SCORES.put("top", JSON.stringify(board));
+      const rank = board.indexOf(entry) + 1 || null;
+      return json({ rank, top: board.map(({ initials, ms }) => ({ initials, ms })) });
     }
     if (pathname.startsWith("/api/")) return json({ error: "not found" }, 404);
     return env.ASSETS.fetch(req);
