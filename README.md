@@ -3,10 +3,17 @@
 A 1-bit pixel fish dodging raindrops. It opens on the
 [rain-pool](https://github.com/diogo7dias/fframes-fun/tree/main/videos/rain-pool) loop (a figure
 turning in the rain), zooms into the water, and becomes a top view of the pond: you are the fish.
-Each drop shows a shrinking ring where it will land, then splashes with a soft water plip. One
-hit and you sink. From a few seconds in, predators join: bigger hollow fish that aim where you
-are heading, close in from different sides, and shiver before they lunge. Drops kill them too,
-and two that crash into each other both die. Score is the time you stayed up; the best 10 go on a shared board with
+Each drop warns three ways: a slanted streak falls in, its shadow fills from sparse to solid, and a
+ring shrinks onto the shadow's edge; it lands, with a soft water plip, when the ring meets the
+edge. One hit and you sink. Enemies join as you survive, each with a little cunning (rules, no AI):
+
+- **Hunter**: aims where you're heading, flanks with others, shivers, lunges straight, rests.
+- **Puffer**: drifts toward you and puffs into a spiky ball when you come close.
+- **Eel**: a long, slow-turning serpent; its whole body is deadly.
+- **Piranha school**: six tiny fish that flock and home in ahead of you.
+
+Drops kill enemies too (a school loses one fish at a time), and two different enemies that touch
+both die. Score is the time you stayed up; the best 10 go on a shared board with
 3-letter initials.
 
 - Steer: mouse (the fish follows), touch (drag anywhere, like a trackpad), or arrows / WASD.

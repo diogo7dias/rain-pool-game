@@ -349,7 +349,7 @@ function spawnDrop() {
 function splash(x, y, big, seed, harmless) {
   G.splashes.push({ x, y, big, seed, age: 0 });
   dropSound(big, x);
-  for (const e of G.enemies) if (!e.dead && e.age > SPAWN_FADE && Math.hypot(e.x - x, e.y - y) < (big ? 6 : 3.5) + ENEMY_R) killEnemy(e);
+  dropHitsEnemies(x, y, big);
   if (harmless) return false;
   const f = G.fish, d = Math.hypot(f.x - x, f.y - y);
   if (d < (big ? 6 : 3.5) + FISH_R) return true;
@@ -392,47 +392,83 @@ function updateRun(dt) {
   for (const w of G.wakes) w.age += dt;
   G.wakes = G.wakes.filter((w) => w.age < 0.6);
 }
-// ---------- predators: bigger hollow fish with a little cunning (rules, no AI) ----------
-// They lead their aim to where you are heading, fan out so two or more close in from different
-// sides, try (not always in time) to swim clear of drops about to land, and near you they
-// shiver, lunge straight and rest, so a sharp turn can slip them. A drop kills them, and two
-// that crash into each other both die.
+// ---------- enemies: four kinds, each with a little cunning (rules, no AI) ----------
+// hunter: leads its aim to where you're heading, fans out with others, shivers, lunges, rests.
+// puffer: drifts toward you, puffs into a spiky ball when you come close, then needs to recover.
+// eel:    a long, slow-turning serpent; its whole body is deadly, so it walls off space.
+// school: six tiny piranhas that flock and home in ahead of you; drops pick them off one by one.
+// Every enemy dies to a drop, and two different enemies that touch both die.
 const ENEMY_SCALE = 1.5, ENEMY_R = 3, SPAWN_FADE = 0.7;
-function spawnEnemy() {
+const KINDS = [ // unlocked at `from` seconds; `max` alive at once
+  { kind: "hunter", from: 4, max: 4, weight: 3 },
+  { kind: "puffer", from: 10, max: 2, weight: 2 },
+  { kind: "school", from: 18, max: 2, weight: 2 },
+  { kind: "eel", from: 28, max: 1, weight: 1.5 },
+];
+function edgePoint(minDist) {
   const f = G.fish;
   let x, y;
   for (let tries = 0; tries < 8; tries++) {
     const e = Math.floor(Math.random() * 4), u = Math.random();
     [x, y] = [[u * W, 12], [u * W, H - 3], [3, 12 + u * (H - 15)], [W - 3, 12 + u * (H - 15)]][e];
-    if (Math.hypot(x - f.x, y - f.y) > 70) break;
+    if (Math.hypot(x - f.x, y - f.y) > minDist) break;
   }
-  const alive = G.enemies.filter((e) => !e.dead).length;
-  G.enemies.push({
-    x, y, vx: 0, vy: 0, ang: Math.atan2(f.y - y, f.x - x), age: 0, state: "swim", st: 0,
-    flank: (alive % 2 ? -1 : 1) * rand(0.6, 1.2), wits: rand(0.45, 1), dead: false, deadT: 0,
-  });
-  plip(rand(200, 260), 0.3, 14, (x / W - 0.5));
+  return [x, y];
 }
-function killEnemy(e) {
+function spawnEnemy() {
+  const alive = G.enemies.filter((e) => !e.dead);
+  const pool = KINDS.filter((k) => G.time >= k.from && alive.filter((e) => e.kind === k.kind).length < k.max);
+  if (!pool.length) return;
+  let r = Math.random() * pool.reduce((s, k) => s + k.weight, 0), kind = pool[0].kind;
+  for (const k of pool) { r -= k.weight; if (r <= 0) { kind = k.kind; break; } }
+  const f = G.fish, [x, y] = edgePoint(70), ang = Math.atan2(f.y - y, f.x - x);
+  const e = { kind, x, y, vx: 0, vy: 0, ang, age: 0, st: 0, state: "swim", dead: false, deadT: 0 };
+  if (kind === "hunter") Object.assign(e, { flank: (alive.length % 2 ? -1 : 1) * rand(0.6, 1.2), wits: rand(0.45, 1) });
+  if (kind === "puffer") Object.assign(e, { puff: 0, st: 9 });
+  if (kind === "eel") Object.assign(e, { trail: [], segs: [] });
+  if (kind === "school") e.fish = Array.from({ length: 6 }, (_, i) => ({ x: x + rand(-3, 3), y: y + rand(-3, 3), vx: Math.cos(ang) * 20, vy: Math.sin(ang) * 20, dead: false, deadT: 0, i }));
+  G.enemies.push(e);
+  const pan = x / W - 0.5;
+  if (kind === "eel") plip(rand(130, 160), 0.35, 8, pan);
+  else if (kind === "school") [0, 0.07, 0.14].forEach((d) => plip(rand(1400, 2000), 0.07, 40, pan, d));
+  else plip(rand(200, 260), 0.3, 14, pan);
+}
+/** The circles that can touch things, as [x, y, r, member]; a school member dies alone. */
+function circles(e) {
+  if (e.kind === "puffer") return [[e.x, e.y, 3 + 6 * e.puff + (e.puff > 0.5 ? 2 : 0)]];
+  if (e.kind === "eel") return e.segs.map((s, i) => [s.x, s.y, i === 0 ? 2.6 : 2]);
+  if (e.kind === "school") return e.fish.filter((m) => !m.dead).map((m) => [m.x, m.y, 1.4, m]);
+  return [[e.x, e.y, ENEMY_R]];
+}
+function killEnemy(e, member) {
+  if (member) {
+    member.dead = true;
+    plip(rand(1100, 1600), 0.08, 35, (member.x / W - 0.5));
+    if (e.fish.every((m) => m.dead)) { e.dead = true; e.deadT = 0; }
+    return;
+  }
   e.dead = true; e.deadT = 0;
   plip(rand(170, 230), 0.4, 11, (e.x / W - 0.5));
   plip(rand(1000, 1500), 0.1, 30, (e.x / W - 0.5), 0.3);
 }
-const turnToward = (a, b, max) => { let d = ((b - a + Math.PI) % TAU + TAU) % TAU - Math.PI; return a + clamp(d, -max, max); };
-function updateEnemies(dt) {
-  const f = G.fish;
-  if (!G.dead) {
-    G.enemyT -= dt;
-    const cap = Math.min(4, 1 + Math.floor(G.time / 18));
-    if (G.enemyT <= 0 && G.enemies.filter((e) => !e.dead).length < cap) {
-      spawnEnemy();
-      G.enemyT = Math.max(2.5, 8 - G.time * 0.06) * rand(0.7, 1.3);
+/** A drop landed at x, y: kill what it hits. */
+function dropHitsEnemies(x, y, big) {
+  for (const e of G.enemies) {
+    if (e.dead || e.age < SPAWN_FADE) continue;
+    for (const [cx, cy, r, m] of circles(e)) {
+      if (Math.hypot(cx - x, cy - y) < (big ? 6 : 3.5) + r) { killEnemy(e, m); if (!m) break; }
     }
   }
-  for (const e of G.enemies) {
-    if (e.dead) { e.deadT += dt; continue; }
-    e.age += dt; e.st += dt;
-    const dx = f.x - e.x, dy = f.y - e.y, d = Math.max(0.5, Math.hypot(dx, dy));
+}
+const turnToward = (a, b, max) => { const d = ((b - a + Math.PI) % TAU + TAU) % TAU - Math.PI; return a + clamp(d, -max, max); };
+function steer(e, speed, dt) {
+  const k = Math.min(1, dt * 6);
+  e.vx += (Math.cos(e.ang) * speed - e.vx) * k; e.vy += (Math.sin(e.ang) * speed - e.vy) * k;
+  e.x = clamp(e.x + e.vx * dt, 2, W - 2); e.y = clamp(e.y + e.vy * dt, 10, H - 2);
+}
+const HUNT = {
+  hunter(e, dt) {
+    const f = G.fish, dx = f.x - e.x, dy = f.y - e.y, d = Math.max(0.5, Math.hypot(dx, dy));
     // aim ahead of the fish, and from their own side while still far
     const lead = Math.min(1.1, d / 70);
     let tx = f.x + f.vx * lead, ty = f.y + f.vy * lead;
@@ -444,32 +480,136 @@ function updateEnemies(dt) {
       if (u > 1 - e.wits * 0.6 && dd < r) { tx = e.x + (e.x - dr.x) / dd * 40; ty = e.y + (e.y - dr.y) / dd * 40; }
     }
     let speed = Math.min(72, 50 + G.time * 0.17), turn = 3.2;
-    if (G.dead) { speed = 20; }
+    if (G.dead) speed = 20;
     else if (e.state === "swim") { if (d < 28 && e.st > 0.8 && e.age > SPAWN_FADE) { e.state = "tell"; e.st = 0; plip(rand(1500, 2100), 0.06, 40, (e.x / W - 0.5)); } }
     else if (e.state === "tell") { speed = 8; if (e.st > 0.3) { e.state = "lunge"; e.st = 0; e.ang = Math.atan2(f.y + f.vy * d / 130 - e.y, f.x + f.vx * d / 130 - e.x); } }
     else if (e.state === "lunge") { speed = 135; turn = 0.7; if (e.st > 0.45) { e.state = "rest"; e.st = 0; } }
     else if (e.state === "rest") { speed = 16; if (e.st > 0.9) { e.state = "swim"; e.st = 0; } }
-    if (e.state !== "lunge") e.ang = turnToward(e.ang, Math.atan2(ty - e.y, tx - e.x), turn * dt);
-    else e.ang = turnToward(e.ang, Math.atan2(dy, dx), turn * dt);
-    const k = Math.min(1, dt * 6);
-    e.vx += (Math.cos(e.ang) * speed - e.vx) * k; e.vy += (Math.sin(e.ang) * speed - e.vy) * k;
-    e.x = clamp(e.x + e.vx * dt, 2, W - 2); e.y = clamp(e.y + e.vy * dt, 10, H - 2);
-    if (!G.dead && e.age > SPAWN_FADE && Math.hypot(f.x - e.x, f.y - e.y) < ENEMY_R + FISH_R * 0.8) die();
+    e.ang = turnToward(e.ang, e.state === "lunge" ? Math.atan2(dy, dx) : Math.atan2(ty - e.y, tx - e.x), turn * dt);
+    steer(e, speed, dt);
+  },
+  puffer(e, dt) {
+    const f = G.fish, d = Math.hypot(f.x - e.x, f.y - e.y);
+    if (e.state === "swim") {
+      e.ang = turnToward(e.ang, Math.atan2(f.y - e.y, f.x - e.x), 2 * dt);
+      steer(e, G.dead ? 6 : 16, dt);
+      if (!G.dead && d < 24 && e.st > 1.5 && e.age > SPAWN_FADE) { e.state = "puff"; e.st = 0; plip(rand(280, 340), 0.35, 18, (e.x / W - 0.5)); }
+    } else {
+      steer(e, 0, dt);
+      if (e.st > 1.4) { e.state = "swim"; e.st = 0; }
+    }
+    const target = e.state === "puff" && e.st < 1.1 ? 1 : 0;
+    e.puff += (target - e.puff) * Math.min(1, dt * (target ? 14 : 5));
+  },
+  eel(e, dt) {
+    const f = G.fish;
+    e.ang = turnToward(e.ang, Math.atan2(f.y - e.y, f.x - e.x) + Math.sin(e.age * 4) * 0.6, 1.7 * dt);
+    const speed = G.dead ? 15 : Math.min(48, 36 + G.time * 0.1);
+    e.x = clamp(e.x + Math.cos(e.ang) * speed * dt, 2, W - 2); e.y = clamp(e.y + Math.sin(e.ang) * speed * dt, 10, H - 2);
+    e.trail.unshift({ x: e.x, y: e.y }); if (e.trail.length > 400) e.trail.pop();
+    // segments every 2.2 px along the path behind the head
+    e.segs = [{ x: e.x, y: e.y }];
+    let acc = 0;
+    for (let i = 1; i < e.trail.length && e.segs.length < 18; i++) {
+      acc += Math.hypot(e.trail[i].x - e.trail[i - 1].x, e.trail[i].y - e.trail[i - 1].y);
+      if (acc >= 2.2) { e.segs.push(e.trail[i]); acc = 0; }
+    }
+  },
+  school(e, dt) {
+    const f = G.fish, live = e.fish.filter((m) => !m.dead);
+    if (!live.length) return;
+    let cx = 0, cy = 0, ax = 0, ay = 0;
+    for (const m of live) { cx += m.x; cy += m.y; ax += m.vx; ay += m.vy; }
+    cx /= live.length; cy /= live.length; ax /= live.length; ay /= live.length;
+    const max = G.dead ? 25 : Math.min(66, 54 + G.time * 0.1);
+    for (const b of live) {
+      let sx = 0, sy = 0;
+      for (const o of live) { const dx = b.x - o.x, dy = b.y - o.y, d = Math.hypot(dx, dy); if (o !== b && d < 5.5) { sx += dx / (d + 0.1); sy += dy / (d + 0.1); } }
+      const tx = f.x + f.vx * 0.5 - b.x, ty = f.y + f.vy * 0.5 - b.y, tl = Math.hypot(tx, ty) || 1;
+      b.vx += ((cx - b.x) * 1.2 + (ax - b.vx) * 1.5 + sx * 70 + tx / tl * 80) * dt;
+      b.vy += ((cy - b.y) * 1.2 + (ay - b.vy) * 1.5 + sy * 70 + ty / tl * 80) * dt;
+      const sp = Math.hypot(b.vx, b.vy); if (sp > max) { b.vx *= max / sp; b.vy *= max / sp; }
+      b.x = clamp(b.x + b.vx * dt, 1, W - 2); b.y = clamp(b.y + b.vy * dt, 10, H - 2);
+    }
+    e.x = cx; e.y = cy;
+  },
+};
+function updateEnemies(dt) {
+  if (!G.dead) {
+    G.enemyT -= dt;
+    const cap = Math.min(5, 1 + Math.floor(G.time / 15));
+    if (G.enemyT <= 0 && G.enemies.filter((e) => !e.dead).length < cap) {
+      spawnEnemy();
+      G.enemyT = Math.max(2.5, 8 - G.time * 0.06) * rand(0.7, 1.3);
+    }
   }
-  // two predators that collide both die
+  for (const e of G.enemies) {
+    if (e.kind === "school") for (const m of e.fish) if (m.dead) m.deadT += dt;
+    if (e.dead) { e.deadT += dt; continue; }
+    e.age += dt; e.st += dt;
+    HUNT[e.kind](e, dt);
+  }
   const live = G.enemies.filter((e) => !e.dead && e.age > SPAWN_FADE);
+  const f = G.fish;
+  for (const e of live) if (!G.dead && circles(e).some(([x, y, r]) => Math.hypot(f.x - x, f.y - y) < r + FISH_R * 0.8)) die();
+  // two different enemies that touch both die
   for (let i = 0; i < live.length; i++) for (let j = i + 1; j < live.length; j++) {
     const a = live[i], b = live[j];
-    if (!a.dead && !b.dead && Math.hypot(a.x - b.x, a.y - b.y) < ENEMY_R * 2) {
-      killEnemy(a); killEnemy(b);
-      G.splashes.push({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, big: false, seed: Math.floor(Math.random() * 1e6), age: 0 });
+    if (a.dead || b.dead) continue;
+    for (const [ax, ay, ar, am] of circles(a)) {
+      const hit = circles(b).find(([bx, by, br]) => Math.hypot(ax - bx, ay - by) < ar + br);
+      if (hit) {
+        killEnemy(a, am); killEnemy(b, hit[3]);
+        G.splashes.push({ x: (ax + hit[0]) / 2, y: (ay + hit[1]) / 2, big: false, seed: Math.floor(Math.random() * 1e6), age: 0 });
+        break;
+      }
     }
   }
   G.enemies = G.enemies.filter((e) => !e.dead || e.deadT < 1.2);
 }
-/** A predator: an outlined body with a sparse dithered fill, jaw open while it hunts close. */
+const plotA = (x, y, a) => { if (a > bayer(Math.floor(x) + 1, Math.floor(y) + 2)) plot(x, y); };
+function disc(cx, cy, r, density) {
+  for (let y = Math.floor(cy - r); y <= cy + r; y++) for (let x = Math.floor(cx - r); x <= cx + r; x++)
+    if ((x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2 < r * r && density > bayer(x, y)) plot(x, y);
+}
 function drawEnemy(e, t) {
   const alpha = e.dead ? 1.1 - e.deadT / 1.2 : Math.min(1.1, e.age / SPAWN_FADE);
+  if (e.kind === "puffer") {
+    const r = 3 + 6 * e.puff;
+    for (let y = Math.floor(e.y - r - 4); y <= e.y + r + 4; y++) for (let x = Math.floor(e.x - r - 4); x <= e.x + r + 4; x++) {
+      const d = Math.hypot(x + 0.5 - e.x, y + 0.5 - e.y);
+      if ((d < r && (d > r - 1 || 0.2 > bayer(x, y))) ) plotA(x, y, alpha);
+    }
+    if (e.puff > 0.5) for (let i = 0; i < 12; i++) {
+      const a = i * TAU / 12 + t * 0.5;
+      for (let s = 0; s <= 2.5; s += 0.5) plotA(e.x + Math.cos(a) * (r + s), e.y + Math.sin(a) * (r + s), alpha);
+    } else {
+      const c = Math.cos(e.ang), s = Math.sin(e.ang);
+      for (const v of [-1, 1]) plotA(e.x + c * 1.2 - s * v, e.y + s * 1.2 + c * v, alpha);
+      for (const v of [-1, 1]) plotA(e.x - s * v * 3.6, e.y + c * v * 3.6, alpha);
+    }
+    return;
+  }
+  if (e.kind === "eel") {
+    e.segs.forEach((sg, i) => {
+      const r = i === 0 ? 2.6 : 2 - i * 0.06, n = 16;
+      for (let k = 0; k < n; k++) plotA(sg.x + Math.cos(k / n * TAU) * r, sg.y + Math.sin(k / n * TAU) * r, alpha);
+      if (i % 3 === 1) plotA(sg.x, sg.y, alpha);
+    });
+    for (const v of [0.6, -0.6]) plotA(e.x + Math.cos(e.ang + v) * 1.3, e.y + Math.sin(e.ang + v) * 1.3, alpha);
+    return;
+  }
+  if (e.kind === "school") {
+    for (const m of e.fish) {
+      const a = m.dead ? 1.1 - m.deadT / 0.8 : alpha;
+      if (a <= 0) continue;
+      const ang = Math.atan2(m.vy, m.vx), c = Math.cos(ang), s = Math.sin(ang);
+      plotA(m.x, m.y, a); plotA(m.x - c * 1.2, m.y - s * 1.2, a);
+      plotA(m.x - c * 2.4 - s * Math.sin(t * 20 + m.i) * 0.6, m.y - s * 2.4 + c * Math.sin(t * 20 + m.i) * 0.6, a);
+    }
+    return;
+  }
+  // hunter: an outlined body with a sparse dithered fill, jaw open while it hunts close
   const scale = ENEMY_SCALE * (e.dead ? 1 - 0.4 * e.deadT / 1.2 : 1);
   const c = Math.cos(e.ang), s = Math.sin(e.ang), wig = Math.sin(t * (e.state === "lunge" ? 26 : 11) + e.flank * 5) * 0.9;
   const shake = e.state === "tell" ? Math.sin(t * 70) * 0.7 : 0, jaw = e.state === "tell" || e.state === "lunge";
@@ -481,8 +621,7 @@ function drawEnemy(e, t) {
     const inTail = u < -2.9 && u > -6 && Math.abs(tv) < (-u - 2.6) * 0.8;
     const mouth = jaw && u > 1.8 && Math.abs(v) < (u - 1.8) * 0.9;
     const eye = Math.abs(u - 1.5) < 0.45 && Math.abs(Math.abs(v) - 0.9) < 0.45;
-    const lit = !mouth && ((r2 < 1 && (r2 > 0.5 || eye || 0.22 > bayer(x, y))) || inTail);
-    if (lit && alpha > bayer(x + 1, y + 2)) plot(x, y);
+    if (!mouth && ((r2 < 1 && (r2 > 0.5 || eye || 0.22 > bayer(x, y))) || inTail)) plotA(x, y, alpha);
   }
 }
 function die() {
@@ -524,9 +663,14 @@ function drawRun(t) {
   for (const w of G.wakes) { const a = w.age / 0.6; ring(w.x, w.y, 1 + 3 * a, 1 - a, 0.2, 7, false); }
   drawSplashes(G.splashes);
   for (const d of G.drops) {
-    const u = d.t / d.warn;
-    ring(d.x, d.y, (d.big ? 3 : 2) + (d.big ? 14 : 10) * (1 - u), 0.3 + 0.9 * u, 0.25, d.seed, false);
-    if (u > 0.5) { plot(d.x, d.y); if (d.big) { plot(d.x - 1, d.y); plot(d.x, d.y - 1); plot(d.x - 1, d.y - 1); } }
+    // a slanted streak falls in, its shadow fills from sparse to solid, and a ring shrinks onto
+    // the shadow's edge: it lands when the ring meets the edge
+    const u = d.t / d.warn, R = d.big ? 7 : 4.5;
+    disc(d.x, d.y, R, 0.08 + 0.8 * u * u);
+    ring(d.x, d.y, R + (d.big ? 14 : 10) * (1 - u), 0.3 + 0.9 * u, 0.25, d.seed, false);
+    const h = 70 * (1 - u), tx = d.x - h * 0.24, ty = d.y - h, len = d.big ? 12 : 8;
+    line(tx, ty, tx - len * 0.24, ty - len, false);
+    if (d.big) line(tx + 1, ty, tx + 1 - len * 0.24, ty - len, false);
   }
   for (const e of G.enemies) drawEnemy(e, t);
   if (!G.dead) drawFish(G.fish, t, 1, FISH_SCALE);
