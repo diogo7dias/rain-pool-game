@@ -339,6 +339,7 @@ function drawGlints(t) {
 const FISH_SCALE = 1.15, FISH_R = 2.6, MAX_SPEED = 95;
 let G = null; // the current run
 function newRun() {
+  tiltZero = tilt; keepAwake();
   G = {
     time: 0, fish: { x: W / 2, y: H * 0.62, vx: 0, vy: 0, ang: -Math.PI / 2 },
     target: null, drops: [], splashes: [], wakes: [], spawn: 0.4, wake: 0, enemies: [], enemyT: 5,
@@ -364,6 +365,38 @@ function splash(x, y, big, seed, harmless) {
   return false;
 }
 const keys = new Set();
+
+// ---------- tilt: on phones the fish rolls like a marble ----------
+// Tilt sets velocity: a 2 degree dead zone, full speed at 20 degrees. The way the phone is held
+// when a run starts counts as level. A finger on the screen overrides it.
+const isTouch = matchMedia("(pointer: coarse)").matches;
+let tilt = null, tiltZero = null, tiltAsked = false, tiltOn = localStorage.getItem("rp-tilt") !== "0";
+function onOrient(e) { if (e.beta != null && e.gamma != null) tilt = { b: e.beta, g: e.gamma }; }
+/** Ask for motion access (iOS needs a tap for it); without it, touch steering still works. */
+function enableTilt() {
+  if (tiltAsked || !isTouch || !tiltOn || !("DeviceOrientationEvent" in window)) return;
+  tiltAsked = true;
+  const start = () => addEventListener("deviceorientation", onOrient);
+  if (typeof DeviceOrientationEvent.requestPermission === "function") {
+    // not granted (or the prompt was dismissed): ask again on the next tap
+    DeviceOrientationEvent.requestPermission().then((r) => { if (r === "granted") start(); else tiltAsked = false; }).catch(() => { tiltAsked = false; });
+  } else start();
+}
+/** Tilt as a -1..1 direction on screen, or null when tilt is off or not reporting. */
+function tiltVector() {
+  if (!tiltOn || !tilt) return null;
+  if (!tiltZero) tiltZero = tilt;
+  let dx = tilt.g - tiltZero.g, dy = tilt.b - tiltZero.b;
+  const a = screen.orientation ? screen.orientation.angle : (window.orientation || 0);
+  if (a === 90) [dx, dy] = [dy, -dx];
+  else if (a === 270 || a === -90) [dx, dy] = [-dy, dx];
+  else if (a === 180) [dx, dy] = [-dx, -dy];
+  const m = (v) => Math.sign(v) * clamp((Math.abs(v) - 2) / 18, 0, 1);
+  return [m(dx), m(dy)];
+}
+let wake = null;
+/** Keep the screen on during a run: with tilt there are no touches to stop it dimming. */
+function keepAwake() { if (navigator.wakeLock && !wake) navigator.wakeLock.request("screen").then((w) => { wake = w; w.addEventListener("release", () => { wake = null; }); }).catch(() => {}); }
 function updateRun(dt) {
   const f = G.fish;
   if (G.dead) { G.deadT += dt; }
@@ -375,7 +408,9 @@ function updateRun(dt) {
     let dx = (keys.has("ArrowRight") || keys.has("d") ? 1 : 0) - (keys.has("ArrowLeft") || keys.has("a") ? 1 : 0);
     let dy = (keys.has("ArrowDown") || keys.has("s") ? 1 : 0) - (keys.has("ArrowUp") || keys.has("w") ? 1 : 0);
     let wx = 0, wy = 0;
+    const tv = touchLast ? null : tiltVector();
     if (dx || dy) { const l = Math.hypot(dx, dy); wx = dx / l * MAX_SPEED; wy = dy / l * MAX_SPEED; G.target = null; }
+    else if (tv) { wx = tv[0] * MAX_SPEED; wy = tv[1] * MAX_SPEED; G.target = null; }
     else if (G.target) {
       wx = (G.target.x - f.x) * 7; wy = (G.target.y - f.y) * 7;
       const l = Math.hypot(wx, wy); if (l > MAX_SPEED) { wx *= MAX_SPEED / l; wy *= MAX_SPEED / l; }
@@ -736,6 +771,7 @@ function drawBoard(t) {
   if (lastMs) text("YOU " + fmt(lastMs), W / 2, 170, 1, "center");
   if (Math.floor(t * 2) % 2 === 0) text("TAP TO PLAY", W / 2, 186, 1, "center");
 }
+function drawTilt() { if (isTouch) text(tiltOn ? "TILT ON" : "TILT OFF", 3, 4); }
 function drawMute() {
   // a tiny speaker in the top-right corner; tap it to mute
   for (let y = 4; y <= 8; y++) { plot(W - 10, y + 0); }
@@ -758,7 +794,7 @@ function frame(dt) {
     drawIntro(introT % LOOP);
     if (Math.floor(modeT * 2) % 2 === 0) text("TAP TO DIVE", W / 2, 62, 1, "center");
     if (board && board.length) text("HI " + board[0].initials + " " + fmt(board[0].ms), W / 2, 72, 1, "center");
-    drawMute();
+    drawMute(); drawTilt();
   } else if (mode === "zoom") {
     introT += dt;
     introSounds(introT % LOOP);
@@ -787,7 +823,7 @@ function frame(dt) {
     amb = amb.filter((s) => s.age < 1.2);
     drawAmbient(t, amb);
     mode === "initials" ? drawInitials(t) : drawBoard(t);
-    drawMute();
+    drawMute(); drawTilt();
   }
   for (let i = 0, j = 0; i < W * H; i++, j += 4) { const v = on[i] ? 255 : 0; img.data[j] = img.data[j + 1] = img.data[j + 2] = v; img.data[j + 3] = 255; }
   ctx.putImageData(img, 0, 0);
@@ -801,6 +837,9 @@ let touchLast = null;
 function press(p) {
   startAudio();
   if (mode !== "play" && mode !== "zoom" && p.x > W - 16 && p.y < 14) { setMuted(!muted); return; }
+  if (mode !== "play" && mode !== "zoom" && isTouch && p.x < 36 && p.y < 14) {
+    tiltOn = !tiltOn; localStorage.setItem("rp-tilt", tiltOn ? "1" : "0"); plip(rand(700, 1100), 0.15, 30); return;
+  }
   if (mode === "title") go("zoom");
   else if (mode === "board") { newRun(); go("play"); }
   else if (mode === "initials") {
@@ -836,7 +875,7 @@ addEventListener("pointermove", (e) => {
   }
 });
 // iOS Safari only unlocks audio on a finger lift, not on touch-down
-addEventListener("pointerup", () => { touchLast = null; startAudio(); });
+addEventListener("pointerup", () => { touchLast = null; startAudio(); enableTilt(); });
 addEventListener("touchend", () => startAudio());
 addEventListener("keydown", (e) => {
   if (e.key === "m" || e.key === "M") { setMuted(!muted); return; }

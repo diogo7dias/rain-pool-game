@@ -17,6 +17,8 @@ both die. Score is the time you stayed up; the best 10 go on a shared board with
 3-letter initials.
 
 - Steer: mouse (the fish follows), touch (drag anywhere, like a trackpad), or arrows / WASD.
+- Phones: tilt to roll the fish like a marble (the way you hold it at the start counts as level;
+  a finger on the screen overrides tilt). `TILT ON/OFF` sits top-left on the title and score screens.
 - `M` or the speaker icon mutes.
 
 ## How it's built
