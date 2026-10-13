@@ -12,6 +12,9 @@
 <style>
   :root { color-scheme: dark; background-color: #000; }
   html, body { margin: 0; height: 100%; background-color: #000; overflow: hidden; }
+  /* phones: no pull-to-refresh, double-tap zoom, long-press menu, text selection or tap flash */
+  html, body { overscroll-behavior: none; touch-action: none; user-select: none; -webkit-user-select: none;
+               -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; }
   body { display: grid; place-items: center; }
   canvas { image-rendering: pixelated; touch-action: none; cursor: crosshair; outline: none; }
 </style>
@@ -114,7 +117,8 @@ const fmt = (ms) => (ms / 1000).toFixed(1);
 // ---------- sound: soft water plips, synthesised ----------
 let ac = null, master = null, muted = localStorage.getItem("rp-muted") === "1";
 function startAudio() {
-  if (ac) { ac.resume(); return; }
+  // resume can fail (no device, or iOS "interrupted" after a call): retry on the next touch
+  if (ac) { if (ac.state !== "running") ac.resume().catch(() => {}); return; }
   ac = new (window.AudioContext || window.webkitAudioContext)();
   master = ac.createGain();
   master.gain.value = muted ? 0 : 0.32;
@@ -811,7 +815,8 @@ function press(p) {
   }
 }
 function cycle(i, d) { slot = i; initials[i] = String.fromCharCode(65 + ((initials[i].charCodeAt(0) - 65 + d + 26) % 26)); plip(rand(700, 1100), 0.15, 30); }
-cv.addEventListener("pointerdown", (e) => {
+// listen on the whole page, so a drag can start in the black margins around the game
+addEventListener("pointerdown", (e) => {
   e.preventDefault(); cv.focus();
   const p = grid(e);
   press(p);
@@ -820,7 +825,7 @@ cv.addEventListener("pointerdown", (e) => {
     else { touchLast = p; G.target = { x: G.fish.x, y: G.fish.y }; }
   }
 });
-cv.addEventListener("pointermove", (e) => {
+addEventListener("pointermove", (e) => {
   if (mode !== "play" || !G) return;
   const p = grid(e);
   if (e.pointerType === "mouse") G.target = p;
@@ -830,7 +835,9 @@ cv.addEventListener("pointermove", (e) => {
     touchLast = p;
   }
 });
-addEventListener("pointerup", () => { touchLast = null; });
+// iOS Safari only unlocks audio on a finger lift, not on touch-down
+addEventListener("pointerup", () => { touchLast = null; startAudio(); });
+addEventListener("touchend", () => startAudio());
 addEventListener("keydown", (e) => {
   if (e.key === "m" || e.key === "M") { setMuted(!muted); return; }
   if (mode === "initials") {
