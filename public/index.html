@@ -14,7 +14,7 @@
 </style>
 </head>
 <body>
-<canvas id="c" width="135" height="180" tabindex="0" aria-label="Rain Pool: steer the fish away from the raindrops"></canvas>
+<canvas id="c" tabindex="0" aria-label="Rain Pool: steer the fish away from the raindrops"></canvas>
 <script>
 "use strict";
 // RAIN POOL, the game. Everything is a 1-bit picture on a 135x180 grid (white or black), scaled
@@ -22,12 +22,19 @@
 // turns into a top view: you are a small fish, raindrops show a shrinking ring before they land,
 // one hit and you sink. Score = seconds survived; the top 10 live on a shared board.
 
-const W = 135, H = 180, TAU = Math.PI * 2;
+// The intro draws on a 135x180 grid like the video; the pond is zoomed out to 180x240 (same 3:4,
+// smaller pixels), so the fish has more room.
+const TAU = Math.PI * 2, INTRO = [135, 180], POND = [180, 240];
+let [W, H] = INTRO;
 const cv = document.getElementById("c");
 const ctx = cv.getContext("2d");
-const img = ctx.createImageData(W, H);
-const on = new Uint8Array(W * H);   // the 1-bit frame
-const halo = new Uint8Array(W * H); // the figure grown by a pixel: rain behind it is cut out
+let img, on, halo; // the 1-bit frame, and the figure grown by a pixel (rain behind it is cut out)
+function setGrid([w, h]) {
+  [W, H] = [w, h];
+  cv.width = w; cv.height = h;
+  img = ctx.createImageData(w, h); on = new Uint8Array(w * h); halo = new Uint8Array(w * h);
+}
+setGrid(INTRO);
 
 // ---------- helpers ----------
 function hash(n) {
@@ -315,14 +322,14 @@ function introSounds(t) {
 }
 
 // ---------- the pond, seen from above ----------
-const GLINTS = Array.from({ length: 70 }, (_, i) => ({ x: hash(i * 3 + 1) * W, y: hash(i * 3 + 2) * H, ph: hash(i * 3 + 3) * TAU, v: 1.5 + hash(i * 7) * 3 }));
+const GLINTS = Array.from({ length: 110 }, (_, i) => ({ x: hash(i * 3 + 1), y: hash(i * 3 + 2), ph: hash(i * 3 + 3) * TAU, v: 1.5 + hash(i * 7) * 3 }));
 function drawGlints(t) {
   for (const g of GLINTS) {
-    const x = ((g.x + t * g.v) % W + W) % W, y = g.y + Math.sin(t * 0.7 + g.ph) * 2;
+    const x = ((g.x * W + t * g.v) % W + W) % W, y = g.y * H + Math.sin(t * 0.7 + g.ph) * 2;
     if (Math.sin(t * 1.3 + g.ph) > 0.55) plot(x, y);
   }
 }
-const FISH_SCALE = 1.15, FISH_R = 2.6, MAX_SPEED = 80;
+const FISH_SCALE = 1.15, FISH_R = 2.6, MAX_SPEED = 95;
 let G = null; // the current run
 function newRun() {
   G = {
@@ -355,7 +362,7 @@ function updateRun(dt) {
   if (G.dead) { G.deadT += dt; }
   else {
     G.time += dt;
-    G.spawn += Math.min(8, 1.3 + G.time * 0.085) * dt;
+    G.spawn += Math.min(10.5, 1.75 + G.time * 0.11) * dt;
     while (G.spawn >= 1) { G.spawn -= 1; spawnDrop(); }
     // steer: keys set a direction, a pointer sets a target
     let dx = (keys.has("ArrowRight") || keys.has("d") ? 1 : 0) - (keys.has("ArrowLeft") || keys.has("a") ? 1 : 0);
@@ -397,7 +404,7 @@ function spawnEnemy() {
   for (let tries = 0; tries < 8; tries++) {
     const e = Math.floor(Math.random() * 4), u = Math.random();
     [x, y] = [[u * W, 12], [u * W, H - 3], [3, 12 + u * (H - 15)], [W - 3, 12 + u * (H - 15)]][e];
-    if (Math.hypot(x - f.x, y - f.y) > 55) break;
+    if (Math.hypot(x - f.x, y - f.y) > 70) break;
   }
   const alive = G.enemies.filter((e) => !e.dead).length;
   G.enemies.push({
@@ -436,11 +443,11 @@ function updateEnemies(dt) {
       const u = dr.t / dr.warn, dd = Math.max(0.5, Math.hypot(e.x - dr.x, e.y - dr.y)), r = (dr.big ? 6 : 3.5) + ENEMY_R + 5;
       if (u > 1 - e.wits * 0.6 && dd < r) { tx = e.x + (e.x - dr.x) / dd * 40; ty = e.y + (e.y - dr.y) / dd * 40; }
     }
-    let speed = Math.min(62, 44 + G.time * 0.15), turn = 3.2;
+    let speed = Math.min(72, 50 + G.time * 0.17), turn = 3.2;
     if (G.dead) { speed = 20; }
     else if (e.state === "swim") { if (d < 28 && e.st > 0.8 && e.age > SPAWN_FADE) { e.state = "tell"; e.st = 0; plip(rand(1500, 2100), 0.06, 40, (e.x / W - 0.5)); } }
-    else if (e.state === "tell") { speed = 8; if (e.st > 0.3) { e.state = "lunge"; e.st = 0; e.ang = Math.atan2(f.y + f.vy * d / 115 - e.y, f.x + f.vx * d / 115 - e.x); } }
-    else if (e.state === "lunge") { speed = 118; turn = 0.7; if (e.st > 0.45) { e.state = "rest"; e.st = 0; } }
+    else if (e.state === "tell") { speed = 8; if (e.st > 0.3) { e.state = "lunge"; e.st = 0; e.ang = Math.atan2(f.y + f.vy * d / 130 - e.y, f.x + f.vx * d / 130 - e.x); } }
+    else if (e.state === "lunge") { speed = 135; turn = 0.7; if (e.st > 0.45) { e.state = "rest"; e.st = 0; } }
     else if (e.state === "rest") { speed = 16; if (e.st > 0.9) { e.state = "swim"; e.st = 0; } }
     if (e.state !== "lunge") e.ang = turnToward(e.ang, Math.atan2(ty - e.y, tx - e.x), turn * dt);
     else e.ang = turnToward(e.ang, Math.atan2(dy, dx), turn * dt);
@@ -549,37 +556,37 @@ function submit() {
     .catch(() => {})
     .finally(() => { sending = false; go("board"); });
 }
-const LETTER_X = [W / 2 - 22, W / 2 - 5, W / 2 + 12], LETTER_Y = 84;
+const letterX = (i) => W / 2 - 22 + i * 17, LETTER_Y = 114;
 function drawAmbient(t, amb) {
   on.fill(0); halo.fill(0);
   drawGlints(t);
   drawSplashes(amb);
 }
 function drawInitials(t) {
-  text("NEW HIGH SCORE", W / 2, 34, 1, "center");
-  text(fmt(lastMs), W / 2, 46, 3, "center");
+  text("NEW HIGH SCORE", W / 2, 64, 1, "center");
+  text(fmt(lastMs), W / 2, 76, 3, "center");
   initials.forEach((ch, i) => {
-    const x = LETTER_X[i];
+    const x = letterX(i);
     if (i !== slot || Math.floor(t * 3) % 2 === 0) text(ch, x, LETTER_Y, 3);
     tri(x + 4, LETTER_Y - 8, 1); tri(x + 4, LETTER_Y + 21, -1);
   });
-  text("OK", W / 2, 126, 2, "center");
-  for (let x = W / 2 - 12; x <= W / 2 + 12; x++) { plot(x, 122); plot(x, 139); }
-  for (let y = 122; y <= 139; y++) { plot(W / 2 - 12, y); plot(W / 2 + 12, y); }
+  text("OK", W / 2, 156, 2, "center");
+  for (let x = W / 2 - 12; x <= W / 2 + 12; x++) { plot(x, 152); plot(x, 169); }
+  for (let y = 152; y <= 169; y++) { plot(W / 2 - 12, y); plot(W / 2 + 12, y); }
 }
 function tri(cx, cy, dir) { for (let r = 0; r < 4; r++) for (let x = -r; x <= r; x++) plot(cx + x, cy + dir * (r - 2)); }
 function drawBoard(t) {
-  text("TOP 10", W / 2, 14, 2, "center");
-  if (!board) text("BOARD OFFLINE", W / 2, 60, 1, "center");
+  text("TOP 10", W / 2, 44, 2, "center");
+  if (!board) text("BOARD OFFLINE", W / 2, 90, 1, "center");
   else board.forEach((row, i) => {
-    const y = 34 + i * 10, mine = lastRank === i + 1;
+    const y = 64 + i * 10, mine = lastRank === i + 1;
     if (mine && Math.floor(t * 3) % 2) return;
-    text(String(i + 1), 26, y, 1, "right");
-    text(row.initials, 36, y);
-    text(fmt(row.ms), 108, y, 1, "right");
+    text(String(i + 1), W / 2 - 41, y, 1, "right");
+    text(row.initials, W / 2 - 31, y);
+    text(fmt(row.ms), W / 2 + 41, y, 1, "right");
   });
-  if (lastMs) text("YOU " + fmt(lastMs), W / 2, 140, 1, "center");
-  if (Math.floor(t * 2) % 2 === 0) text("TAP TO PLAY", W / 2, 156, 1, "center");
+  if (lastMs) text("YOU " + fmt(lastMs), W / 2, 170, 1, "center");
+  if (Math.floor(t * 2) % 2 === 0) text("TAP TO PLAY", W / 2, 186, 1, "center");
 }
 function drawMute() {
   // a tiny speaker in the top-right corner; tap it to mute
@@ -615,7 +622,7 @@ function frame(dt) {
       const sx = Math.floor(cx + (x + 0.5 - W / 2) / s), sy = Math.floor(cy + (y + 0.5 - H / 2) / s);
       if (sx >= 0 && sx < W && sy >= 0 && sy < H && src[sy * W + sx] && fade > bayer(x, y)) on[y * W + x] = 1;
     }
-    if (modeT >= ZOOM) { newRun(); go("play"); }
+    if (modeT >= ZOOM) { setGrid(POND); newRun(); go("play"); }
   } else if (mode === "play") {
     updateRun(dt);
     drawRun(t);
@@ -650,13 +657,13 @@ function press(p) {
   else if (mode === "board") { newRun(); go("play"); }
   else if (mode === "initials") {
     for (let i = 0; i < 3; i++) {
-      if (Math.abs(p.x - (LETTER_X[i] + 4)) < 8) {
+      if (Math.abs(p.x - (letterX(i) + 4)) < 8) {
         if (p.y > LETTER_Y - 14 && p.y < LETTER_Y - 2) { cycle(i, -1); return; }
         if (p.y > LETTER_Y + 15 && p.y < LETTER_Y + 27) { cycle(i, 1); return; }
         if (p.y >= LETTER_Y - 2 && p.y <= LETTER_Y + 15) { slot = i; cycle(i, 1); return; }
       }
     }
-    if (p.y > 118 && p.y < 144 && Math.abs(p.x - W / 2) < 16) submit();
+    if (p.y > 148 && p.y < 174 && Math.abs(p.x - W / 2) < 16) submit();
   }
 }
 function cycle(i, d) { slot = i; initials[i] = String.fromCharCode(65 + ((initials[i].charCodeAt(0) - 65 + d + 26) % 26)); plip(rand(700, 1100), 0.15, 30); }
@@ -700,9 +707,9 @@ addEventListener("keyup", (e) => keys.delete(e.key.length === 1 ? e.key.toLowerC
 
 // crisp pixels: the biggest whole-pixel scale that fits, fractional only on tiny screens
 function fit() {
-  const dpr = devicePixelRatio || 1, k = Math.min(innerWidth / W, innerHeight / H);
-  const s = k * dpr >= 2 ? Math.floor(k * dpr) / dpr : k;
-  cv.style.width = W * s + "px"; cv.style.height = H * s + "px";
+  const dpr = devicePixelRatio || 1, max = Math.min(innerWidth, innerHeight * 3 / 4) * dpr;
+  const w = max >= 540 ? Math.floor(max / 540) * 540 : max;
+  cv.style.width = w / dpr + "px"; cv.style.height = w * 4 / 3 / dpr + "px";
 }
 addEventListener("resize", fit);
 fit();

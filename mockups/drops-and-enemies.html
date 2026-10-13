@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RAIN POOL: drop warnings and enemies</title>
+<style>
+  :root { color-scheme: dark; background-color: #000; }
+  body { margin: 0; padding: 24px 16px 48px; background-color: #000; color: #fff;
+         font: 15px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: 0.08em; }
+  h2 { font-size: 16px; margin: 36px 0 4px; letter-spacing: 0.06em; }
+  p.lead { margin: 0 0 16px; color: #bbb; max-width: 70ch; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+  .card { border: 1px solid #333; padding: 12px; }
+  .card canvas { width: 100%; aspect-ratio: 1; image-rendering: pixelated; display: block; background-color: #000; }
+  .num { display: inline-block; background-color: #fff; color: #000; padding: 0 8px; font-weight: 700; margin-right: 8px; }
+  .title { font-weight: 700; }
+  .desc { color: #bbb; margin: 8px 0 0; }
+  .ref { border-style: dashed; }
+</style>
+</head>
+<body>
+<h1>RAIN POOL: pick by number</h1>
+<p class="lead">Live 1-bit loops at the new zoomed-out scale (fish and drops drawn at the size they will be in the game). Drops here warn for 1.1 s so they're easy to compare; the game shortens that as you survive.</p>
+
+<h2>Drop warnings: when does it land?</h2>
+<div class="grid" id="drops"></div>
+
+<h2>Enemies</h2>
+<p class="lead">E1 is the hunter already in the game, for reference. E2–E4 are the new ones. Every enemy dies to a drop.</p>
+<div class="grid" id="enemies"></div>
+
+<script>
+"use strict";
+const N = 96, TAU = Math.PI * 2;
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+const bayer = (x, y) => (BAYER[((y & 3) * 4) + (x & 3)] + 0.5) / 16;
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const easeOut = (x) => 1 - Math.pow(1 - clamp(x, 0, 1), 3);
+function hash(n) { let x = Math.imul(n >>> 0, 0x9e3779b9) ^ 0x85ebca6b; x ^= x >>> 15; x = Math.imul(x, 0x2c1b3c6d); x ^= x >>> 12; return (x & 0xffff) / 65535; }
+
+const cards = [];
+function card(parent, num, title, desc, scene, ref) {
+  const el = document.createElement("div");
+  el.className = "card" + (ref ? " ref" : "");
+  el.innerHTML = `<canvas width="${N}" height="${N}"></canvas><div style="margin-top:10px"><span class="num">${num}</span><span class="title">${title}</span></div><p class="desc">${desc}</p>`;
+  document.getElementById(parent).appendChild(el);
+  const cv = el.querySelector("canvas"), ctx = cv.getContext("2d");
+  cards.push({ ctx, img: ctx.createImageData(N, N), on: new Uint8Array(N * N), scene, state: {} });
+}
+
+// drawing helpers, all on the current card's buffer
+let B;
+const plot = (x, y) => { x = Math.floor(x); y = Math.floor(y); if (x >= 0 && x < N && y >= 0 && y < N) B[y * N + x] = 1; };
+const clear = (x, y) => { x = Math.floor(x); y = Math.floor(y); if (x >= 0 && x < N && y >= 0 && y < N) B[y * N + x] = 0; };
+function line(x0, y0, x1, y1) { const s = Math.max(1, Math.ceil(Math.max(Math.abs(x1 - x0), Math.abs(y1 - y0)))); for (let i = 0; i <= s; i++) plot(x0 + (x1 - x0) * i / s, y0 + (y1 - y0) * i / s); }
+function ring(cx, cy, r, alpha, gaps, seed, from = 0) {
+  const n = Math.max(8, Math.ceil(TAU * r)) * 2;
+  for (let s = 0; s < n; s++) {
+    const a = s / n * TAU;
+    if (a / TAU < from) continue;
+    if (hash(seed + Math.floor(a * r / 4)) < gaps) continue;
+    const x = Math.floor(cx + r * Math.sin(a)), y = Math.floor(cy - r * Math.cos(a));
+    if (alpha > bayer(x, y)) plot(x, y);
+  }
+}
+function disc(cx, cy, r, density) {
+  for (let y = Math.floor(cy - r); y <= cy + r; y++) for (let x = Math.floor(cx - r); x <= cx + r; x++)
+    if ((x + 0.5 - cx) ** 2 + (y + 0.5 - cy) ** 2 < r * r && density > bayer(x, y)) plot(x, y);
+}
+function fish(f, t, scale = 1.15) {
+  const c = Math.cos(f.ang), s = Math.sin(f.ang), wig = Math.sin(t * 14) * 0.9;
+  for (let y = Math.floor(f.y - 8); y <= f.y + 8; y++) for (let x = Math.floor(f.x - 8); x <= f.x + 8; x++) {
+    const px = (x + 0.5 - f.x) / scale, py = (y + 0.5 - f.y) / scale, u = px * c + py * s, v = -px * s + py * c;
+    const body = (u / 3.4) ** 2 + (v / 1.7) ** 2 < 1, tv = v - wig * (-u - 2.5) * 0.35;
+    const tail = u < -2.6 && u > -5.6 && Math.abs(tv) < (-u - 2.4) * 0.75;
+    const eye = Math.abs(u - 1.6) < 0.5 && Math.abs(Math.abs(v) - 0.9) < 0.5;
+    if ((body && !eye) || tail) plot(x, y);
+  }
+}
+function splash(x, y, age, big, seed) {
+  const life = big ? 1.2 : 0.8;
+  [0, 0.18].forEach((lag, r) => { const a = (age - lag) / (life - lag); if (a > 0 && a < 1) ring(x, y, 1 + (big ? 22 : 13) * easeOut(a), 1.35 * Math.pow(1 - a, 1.4), 0.1 + 0.55 * a, seed + r); });
+  if (age < 0.35) { const f = age / 0.35; for (let i = 0; i < 6; i++) { const a = i * TAU / 6 + hash(seed) * TAU, r = (big ? 9 : 5.5) * easeOut(f); plot(x + Math.cos(a) * r, y + Math.sin(a) * r); } }
+}
+// the player fish swims a slow figure eight, so drops have something to threaten
+function swimmer(t, cx = 48, cy = 50, ax = 16, ay = 10, w = 0.8) {
+  const x = cx + ax * Math.sin(t * w), y = cy + ay * Math.sin(t * w * 2);
+  const vx = ax * w * Math.cos(t * w), vy = ay * w * 2 * Math.cos(t * w * 2);
+  return { x, y, vx, vy, ang: Math.atan2(vy, vx) };
+}
+
+// ---------- drop warnings ----------
+const WARN = 1.1, EVERY = 0.55;
+/** Runs drops on a fixed schedule; `tele(x, y, u, big, seed)` draws the warning for progress u in 0..1. */
+function dropScene(tele) {
+  return (t) => {
+    const f = swimmer(t);
+    for (let k = Math.floor(t / EVERY) - 6; k <= Math.floor(t / EVERY); k++) {
+      if (k < 0) continue;
+      const t0 = k * EVERY, u = (t - t0) / WARN, big = hash(k * 7 + 3) < 0.2, seed = k * 131;
+      const x = 12 + hash(k * 3 + 1) * (N - 24), y = 14 + hash(k * 3 + 2) * (N - 26);
+      if (u >= 0 && u < 1) tele(x, y, u, big, seed, t);
+      else if (u >= 1 && (t - t0 - WARN) < 1.2) splash(x, y, t - t0 - WARN, big, seed);
+    }
+    fish(f, t);
+  };
+}
+const hitR = (big) => (big ? 6 : 3.5) + 1.5;
+const DROPS = [
+  ["D1", "Shrinking ring (now)", "What the game does today: a ring shrinks onto the spot, a dot appears at half time. Shows where, but the exact moment is fuzzy.",
+    (x, y, u, big, seed) => { ring(x, y, (big ? 3 : 2) + (big ? 14 : 10) * (1 - u), 0.3 + 0.9 * u, 0.25, seed); if (u > 0.5) { plot(x, y); if (big) { plot(x - 1, y); plot(x, y - 1); plot(x - 1, y - 1); } } }, true],
+  ["D2", "Clock ring", "A solid ring the size of the danger zone eats itself clockwise like a timer. It lands the instant the last dash vanishes.",
+    (x, y, u, big, seed) => { ring(x, y, hitR(big), 1, 0, seed, u); plot(x, y); }],
+  ["D3", "Closing rings", "A fixed outer ring marks the danger zone; an inner ring grows to meet it. It lands when they touch, and the outer ring flashes solid just before.",
+    (x, y, u, big, seed) => { const R = hitR(big); ring(x, y, R, u > 0.85 ? 1 : 0.55, u > 0.85 ? 0 : 0.35, seed); ring(x, y, Math.max(0.5, R * u), 1, 0, seed + 9); }],
+  ["D4", "Growing shadow", "The drop's shadow darkens as it falls: a dithered disc that fills in from sparse to solid. Solid = landing.",
+    (x, y, u, big) => { disc(x, y, hitR(big), 0.08 + 0.85 * u * u); if (u > 0.6) plot(x, y - 1); }],
+  ["D5", "Bomb blink", "A crosshair on the danger ring blinks faster and faster, then holds solid for the last beat. Very readable, a bit arcade.",
+    (x, y, u, big, seed) => { const ph = 3 * u + 7 * u * u; if (u > 0.88 || ph % 1 < 0.5) { const R = hitR(big); ring(x, y, R, 1, 0.3, seed); line(x - 3, y, x + 3, y); line(x, y - 3, x, y + 3); } }],
+  ["D6", "Falling streak", "Like the intro: a slanted rain streak falls toward a faint target ring. When its tip reaches the ring centre, it lands. You see the drop itself coming.",
+    (x, y, u, big, seed) => { ring(x, y, hitR(big), 0.4 + 0.4 * u, 0.4, seed); const h = 60 * (1 - u), tx = x - h * 0.24, ty = y - h; line(tx, ty, tx - (big ? 12 : 8) * 0.24, ty - (big ? 12 : 8)); if (big) line(tx + 1, ty, tx + 1 - 12 * 0.24, ty - 12); }],
+  ["D7", "Streak + closing rings", "D6 and D3 together: the streak tells you a drop is coming, the rings tell you exactly when and how wide.",
+    (x, y, u, big, seed) => { const R = hitR(big); ring(x, y, R, u > 0.85 ? 1 : 0.55, u > 0.85 ? 0 : 0.35, seed); ring(x, y, Math.max(0.5, R * u), 1, 0, seed + 9); const h = 60 * (1 - u), tx = x - h * 0.24, ty = y - h; line(tx, ty, tx - 8 * 0.24, ty - 8); }],
+];
+DROPS.forEach(([n, title, desc, tele, ref]) => card("drops", n, title, desc, dropScene(tele), ref));
+
+// ---------- enemies ----------
+const turnToward = (a, b, max) => { const d = ((b - a + Math.PI) % TAU + TAU) % TAU - Math.PI; return a + clamp(d, -max, max); };
+function edgeSpawn(seed) { const e = Math.floor(hash(seed) * 4), u = hash(seed + 1) * N; return [[u, 2], [u, N - 2], [2, u], [N - 2, u]][e]; }
+/** Draws a fish outline with sparse fill, the current hunter's look. */
+function hollow(e, t, scale, jaw) {
+  const c = Math.cos(e.ang), s = Math.sin(e.ang), wig = Math.sin(t * 11) * 0.9;
+  for (let y = Math.floor(e.y - 10); y <= e.y + 10; y++) for (let x = Math.floor(e.x - 10); x <= e.x + 10; x++) {
+    const px = (x + 0.5 - e.x) / scale, py = (y + 0.5 - e.y) / scale, u = px * c + py * s, v = -px * s + py * c;
+    const r2 = (u / 3.6) ** 2 + (v / 1.9) ** 2, tv = v - wig * (-u - 2.7) * 0.35;
+    const tail = u < -2.9 && u > -6 && Math.abs(tv) < (-u - 2.6) * 0.8, mouth = jaw && u > 1.8 && Math.abs(v) < (u - 1.8) * 0.9;
+    const eye = Math.abs(u - 1.5) < 0.45 && Math.abs(Math.abs(v) - 0.9) < 0.45;
+    if (!mouth && ((r2 < 1 && (r2 > 0.5 || eye || 0.22 > bayer(x, y))) || tail)) plot(x, y);
+  }
+}
+function caught(st, f, e, r) { if (Math.hypot(f.x - e.x, f.y - e.y) < r) { st.flash = 0.4; return true; } return false; }
+function flash(st, dt) { if (st.flash > 0) { st.flash -= dt; for (let i = 0; i < N; i++) { plot(i, 0); plot(i, N - 1); plot(0, i); plot(N - 1, i); } } }
+
+const ENEMIES = [
+  ["E1", "Hunter (in the game now)", "Aims where you're heading, flanks with others, shivers, lunges straight, rests. Counter: sharp turn during the lunge; lure two into each other.",
+    (t, dt, st) => {
+      const f = swimmer(t, 48, 48, 30, 26, 0.6);
+      if (!st.e) { const [x, y] = edgeSpawn(Math.floor(t * 10)); st.e = { x, y, ang: 0, state: "swim", s: 0, vx: 0, vy: 0 }; }
+      const e = st.e; e.s += dt;
+      const d = Math.hypot(f.x - e.x, f.y - e.y), lead = Math.min(1.1, d / 70);
+      let sp = 38, tr = 3.2;
+      if (e.state === "swim" && d < 26 && e.s > 0.8) { e.state = "tell"; e.s = 0; }
+      else if (e.state === "tell") { sp = 8; if (e.s > 0.3) { e.state = "lunge"; e.s = 0; e.ang = Math.atan2(f.y + f.vy * d / 100 - e.y, f.x + f.vx * d / 100 - e.x); } }
+      else if (e.state === "lunge") { sp = 100; tr = 0.7; if (e.s > 0.45) { e.state = "rest"; e.s = 0; } }
+      else if (e.state === "rest") { sp = 14; if (e.s > 0.9) { e.state = "swim"; e.s = 0; } }
+      if (e.state !== "lunge") e.ang = turnToward(e.ang, Math.atan2(f.y + f.vy * lead - e.y, f.x + f.vx * lead - e.x), tr * dt);
+      e.vx += (Math.cos(e.ang) * sp - e.vx) * Math.min(1, dt * 6); e.vy += (Math.sin(e.ang) * sp - e.vy) * Math.min(1, dt * 6);
+      e.x = clamp(e.x + e.vx * dt, 2, N - 2); e.y = clamp(e.y + e.vy * dt, 2, N - 2);
+      if (caught(st, f, e, 5)) st.e = null;
+      hollow(e, t, 1.3, e.state === "tell" || e.state === "lunge");
+      fish(f, t); flash(st, dt);
+    }, true],
+  ["E2", "Eel", "A long, slow-turning serpent. The head steers for you in a sine wiggle; the whole body is deadly, so it walls off space as it coils. Counter: outpace it on straights, cut across behind the tail.",
+    (t, dt, st) => {
+      const f = swimmer(t, 48, 48, 32, 28, 0.55);
+      if (!st.h) { st.h = { x: 4, y: 80, ang: -0.6 }; st.trail = []; }
+      const h = st.h;
+      const want = Math.atan2(f.y - h.y, f.x - h.x) + Math.sin(t * 4) * 0.6;
+      h.ang = turnToward(h.ang, want, 1.7 * dt);
+      h.x = clamp(h.x + Math.cos(h.ang) * 30 * dt, 2, N - 2); h.y = clamp(h.y + Math.sin(h.ang) * 30 * dt, 2, N - 2);
+      st.trail.unshift({ x: h.x, y: h.y }); if (st.trail.length > 200) st.trail.pop();
+      // segments every 2.2 px along the path behind the head
+      const segs = [h]; let acc = 0;
+      for (let i = 1; i < st.trail.length && segs.length < 16; i++) {
+        acc += Math.hypot(st.trail[i].x - st.trail[i - 1].x, st.trail[i].y - st.trail[i - 1].y);
+        if (acc >= 2.2) { segs.push(st.trail[i]); acc = 0; }
+      }
+      segs.forEach((s, i) => { const r = i === 0 ? 2.4 : 1.9 - i * 0.07; ring(s.x, s.y, r, 1, 0, 1); if (i % 3 === 1) plot(s.x, s.y); });
+      plot(h.x + Math.cos(h.ang + 0.6) * 1.2, h.y + Math.sin(h.ang + 0.6) * 1.2); plot(h.x + Math.cos(h.ang - 0.6) * 1.2, h.y + Math.sin(h.ang - 0.6) * 1.2);
+      if (segs.some((s) => caught(st, f, s, 3.5))) { st.h = null; }
+      fish(f, t); flash(st, dt);
+    }],
+  ["E3", "Puffer", "Drifts toward you slowly. When you get close it puffs into a spiky ball three times its size for a second, then deflates and needs a moment to recover. Counter: bait the puff, then slip past while it's small.",
+    (t, dt, st) => {
+      const f = swimmer(t, 48, 48, 30, 24, 0.7);
+      if (!st.p) st.p = { x: 48, y: 12, puff: 0, s: 9, state: "drift" };
+      const p = st.p; p.s += dt;
+      const d = Math.hypot(f.x - p.x, f.y - p.y);
+      if (p.state === "drift") { const a = Math.atan2(f.y - p.y, f.x - p.x); p.x += Math.cos(a) * 13 * dt; p.y += Math.sin(a) * 13 * dt; if (d < 20 && p.s > 1.5) { p.state = "puff"; p.s = 0; } }
+      else if (p.state === "puff") { if (p.s > 1.4) { p.state = "drift"; p.s = 0; } }
+      const target = p.state === "puff" ? (p.s < 1.1 ? 1 : 0) : 0;
+      p.puff += (target - p.puff) * Math.min(1, dt * (target ? 14 : 5));
+      const r = 3 + 6 * p.puff;
+      disc(p.x, p.y, r, 0.2); ring(p.x, p.y, r, 1, 0, 3);
+      if (p.puff > 0.5) for (let i = 0; i < 12; i++) { const a = i * TAU / 12 + t * 0.5; line(p.x + Math.cos(a) * r, p.y + Math.sin(a) * r, p.x + Math.cos(a) * (r + 2.5), p.y + Math.sin(a) * (r + 2.5)); }
+      else { plot(p.x - 1, p.y - 1); plot(p.x + 1, p.y - 1); plot(p.x - 4, p.y); plot(p.x + 3, p.y); }
+      if (caught(st, f, p, r + (p.puff > 0.5 ? 2.5 : 0) + 1.5)) { st.p = null; }
+      fish(f, t); flash(st, dt);
+    }],
+  ["E4", "Piranha school", "Six tiny fish that flock (they stick together, match speed, keep a little space) and the school as a whole homes in ahead of you. Fast but clumsy on sharp turns, and a drop can wipe out several at once.",
+    (t, dt, st) => {
+      const f = swimmer(t, 48, 48, 34, 28, 0.75);
+      if (!st.s) st.s = Array.from({ length: 6 }, (_, i) => ({ x: 6 + i * 2, y: 88 - i, vx: 20, vy: -10 }));
+      for (const b of st.s) {
+        let cx = 0, cy = 0, ax = 0, ay = 0, sx = 0, sy = 0;
+        for (const o of st.s) { cx += o.x; cy += o.y; ax += o.vx; ay += o.vy; const dx = b.x - o.x, dy = b.y - o.y, d = Math.hypot(dx, dy); if (o !== b && d < 5.5) { sx += dx / (d + 0.1); sy += dy / (d + 0.1); } }
+        const n = st.s.length; cx /= n; cy /= n; ax /= n; ay /= n;
+        const lead = 0.5, tx = f.x + f.vx * lead - b.x, ty = f.y + f.vy * lead - b.y, tl = Math.hypot(tx, ty) || 1;
+        b.vx += ((cx - b.x) * 1.2 + (ax - b.vx) * 1.5 + sx * 70 + tx / tl * 70) * dt;
+        b.vy += ((cy - b.y) * 1.2 + (ay - b.vy) * 1.5 + sy * 70 + ty / tl * 70) * dt;
+        const sp = Math.hypot(b.vx, b.vy), max = 46; if (sp > max) { b.vx *= max / sp; b.vy *= max / sp; }
+        b.x = clamp(b.x + b.vx * dt, 1, N - 2); b.y = clamp(b.y + b.vy * dt, 1, N - 2);
+        const a = Math.atan2(b.vy, b.vx); plot(b.x, b.y); plot(b.x - Math.cos(a) * 1.2, b.y - Math.sin(a) * 1.2); plot(b.x - Math.cos(a) * 2.4 + Math.sin(t * 20) * 0.6, b.y - Math.sin(a) * 2.4);
+      }
+      if (st.s.some((b) => caught(st, f, b, 2.8))) st.s = null;
+      fish(f, t); flash(st, dt);
+    }],
+];
+ENEMIES.forEach(([n, title, desc, sim, ref]) => card("enemies", n, title, desc, sim, ref));
+
+let last = performance.now();
+function loop(now) {
+  const t = now / 1000, dt = Math.min(0.05, (now - last) / 1000); last = now;
+  for (const c of cards) {
+    B = c.on; B.fill(0);
+    c.scene(t, dt, c.state);
+    const d = c.img.data;
+    for (let i = 0, j = 0; i < N * N; i++, j += 4) { const v = B[i] ? 255 : 0; d[j] = d[j + 1] = d[j + 2] = v; d[j + 3] = 255; }
+    c.ctx.putImageData(c.img, 0, 0);
+  }
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
