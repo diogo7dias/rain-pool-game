@@ -3,8 +3,8 @@
 A 1-bit pixel fish dodging raindrops. It opens on the
 [rain-pool](https://github.com/diogo7dias/fframes-fun/tree/main/videos/rain-pool) loop (a figure
 turning in the rain), zooms into the water, and becomes a top view of the pond: you are the fish.
-Each drop warns three ways: a slanted streak falls in, its shadow fills from sparse to solid, and a
-ring shrinks onto the shadow's edge; it lands, with a soft water plip, when the ring meets the
+Each drop warns two ways: its shadow fills from sparse to solid, and a ring shrinks onto the
+shadow's edge; it lands, with a soft water plip, when the ring meets the
 edge. One hit and you sink. Enemies join as you survive, each with a little cunning (rules, no AI):
 
 - **Hunter**: aims where you're heading, flanks with others, shivers, lunges straight, rests.

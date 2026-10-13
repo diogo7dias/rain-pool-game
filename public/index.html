@@ -666,14 +666,11 @@ function drawRun(t) {
   for (const w of G.wakes) { const a = w.age / 0.6; ring(w.x, w.y, 1 + 3 * a, 1 - a, 0.2, 7, false); }
   drawSplashes(G.splashes);
   for (const d of G.drops) {
-    // a slanted streak falls in, its shadow fills from sparse to solid, and a ring shrinks onto
-    // the shadow's edge: it lands when the ring meets the edge
+    // its shadow fills from sparse to solid, and a ring shrinks onto the shadow's edge: it
+    // lands when the ring meets the edge
     const u = d.t / d.warn, R = d.big ? 7 : 4.5;
     disc(d.x, d.y, R, 0.08 + 0.8 * u * u);
     ring(d.x, d.y, R + (d.big ? 14 : 10) * (1 - u), 0.3 + 0.9 * u, 0.25, d.seed, false);
-    const h = 70 * (1 - u), tx = d.x - h * 0.24, ty = d.y - h, len = d.big ? 12 : 8;
-    line(tx, ty, tx - len * 0.24, ty - len, false);
-    if (d.big) line(tx + 1, ty, tx + 1 - len * 0.24, ty - len, false);
   }
   for (const e of G.enemies) drawEnemy(e, t);
   if (!G.dead) drawFish(G.fish, t, 1, FISH_SCALE);
