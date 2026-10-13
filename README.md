@@ -4,7 +4,9 @@ A 1-bit pixel fish dodging raindrops. It opens on the
 [rain-pool](https://github.com/diogo7dias/fframes-fun/tree/main/videos/rain-pool) loop (a figure
 turning in the rain), zooms into the water, and becomes a top view of the pond: you are the fish.
 Each drop shows a shrinking ring where it will land, then splashes with a soft water plip. One
-hit and you sink. Score is the time you stayed up; the best 10 go on a shared board with
+hit and you sink. From a few seconds in, predators join: bigger hollow fish that aim where you
+are heading, close in from different sides, and shiver before they lunge. Drops kill them too,
+and two that crash into each other both die. Score is the time you stayed up; the best 10 go on a shared board with
 3-letter initials.
 
 - Steer: mouse (the fish follows), touch (drag anywhere, like a trackpad), or arrows / WASD.
